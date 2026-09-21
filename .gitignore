@@ -1,0 +1,34 @@
+# Data — datasets are large and licensed; not for git
+data/raw/
+data/processed/
+data/exploration_samples/
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Tooling caches / runs
+runs/
+rebased/
+_tile_tmp/
+.cache/
+*.cache
+labels.cache
+
+# Kaggle notebook outputs
+kaggle/roboat/
+*.pt
+*.onnx
+*.hef
+
+# OS
+Thumbs.db
+.DS_Store
+
+# IDE / agent tooling
+.idea/
+.mimosa/
+.zcode/
