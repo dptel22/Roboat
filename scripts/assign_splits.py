@@ -75,6 +75,18 @@ def assign_kk(sizes, fr=(0.8, 0.1, 0.1)):
     return out
 
 
+def _safe_out(path: Path, root: Path) -> Path:
+    """Resolve an output path and refuse traversal outside its root."""
+    rp, rr = path.resolve(), root.resolve()
+    if not rp.is_relative_to(rr):
+        raise ValueError(f"path escapes allowed root {rr}: {path}")
+    return rp
+
+
+OUT_ASSIGN_CMP = _safe_out(AUDIT / "assignment_comparison.csv", AUDIT)
+OUT_ASSIGN = _safe_out(AUDIT / "split_assignment.csv", AUDIT)
+OUT_LEAK = _safe_out(AUDIT / "post_split_leakage.csv", AUDIT)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="skip CLIP recompute (pHash only)")
@@ -109,10 +121,10 @@ def main():
                      "chosen": "greedy" if g_err <= k_err else "kk"})
         print(f"{src}: greedy={gr} (err {g_err:.3f})  kk={kr} (err {k_err:.3f})  -> {comp[-1]['chosen']}")
 
-    with open(AUDIT / "assignment_comparison.csv", "w", newline="", encoding="utf-8") as f:
+    with open(OUT_ASSIGN_CMP, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(comp[0].keys()))
         w.writeheader(); w.writerows(comp)
-    with open(AUDIT / "split_assignment.csv", "w", newline="", encoding="utf-8") as f:
+    with open(OUT_ASSIGN, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f); w.writerow(["source", "group_id", "split"])
         for src, sp in chosen.items():
             for g in sorted(sp):
@@ -167,7 +179,7 @@ def main():
             c95 += r["near_dup_clip_cos_ge095"]
         print(f"CLIP>=0.95: {c95}/{n} = {c95/n:.1%}" if n else "")
     if leak:
-        with open(AUDIT / "post_split_leakage.csv", "w", newline="", encoding="utf-8") as f:
+        with open(OUT_LEAK, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=list(leak[0].keys()))
             w.writeheader(); w.writerows(leak)
     print("done")

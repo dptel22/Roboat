@@ -46,8 +46,9 @@ do not stage debris.
 1. Pre-label with the **Saigon YOLOv8 weights** (Zenodo record 12800597 —
    "Yolov8 Model weights (Detection of floating plastic litter and water
    hyacinths)", TU Delft, **CC-BY-4.0**, `trained_weights.zip`; code at
-   github.com/TianlongJia/deep_plastic_YoloV8) — two models: plastic litter and
-   water hyacinth. Map outputs to our taxonomy (`litter`/`hyacinth`).
+   github.com/TianlongJia/deep_plastic_YoloV8) — detects 3 classes: `ff_litter`,
+   `hyacinth`, and `ent_litter`. Map outputs to our taxonomy (`litter`/`hyacinth`/`entangled_plastic`).
+   - *Note on cross-river accuracy:* This checkpoint's litter-class accuracy drops sharply across rivers (48%→23% mAP50 in the source paper's own cross-river test), hyacinth holds up better. Whoever does the CVAT pass should expect to correct litter pre-labels heavily and trust hyacinth ones more.
 2. Pre-label with our Kaggle baseline as a second opinion.
 3. Human review + correction in **CVAT or Label Studio**: accept/fix/delete
    boxes; correct the class, and add `entangled_plastic` boxes where visible

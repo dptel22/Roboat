@@ -20,6 +20,16 @@ PROC = ROOT / "data" / "processed"
 CALIB = PROC / "calib"
 
 
+def _safe_out(path: Path, root: Path) -> Path:
+    """Resolve an output path and refuse traversal outside its root."""
+    rp, rr = path.resolve(), root.resolve()
+    if not rp.is_relative_to(rr):
+        raise ValueError(f"path escapes allowed root {rr}: {path}")
+    return rp
+
+
+OUT_CALIB_MANIFEST = _safe_out(CALIB / "calib_manifest.csv", CALIB)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=1024)
@@ -62,7 +72,7 @@ def main():
     (CALIB / "calib_list.txt").write_text(
         "\n".join(str(p.relative_to(ROOT)).replace("\\", "/")
                   for p in sorted((CALIB / "images").glob("*.jpg"))) + "\n")
-    with open(CALIB / "calib_manifest.csv", "w", newline="", encoding="utf-8") as f:
+    with open(OUT_CALIB_MANIFEST, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["source", "original_path", "final_stem", "has_hyacinth"])
         for r in picks:

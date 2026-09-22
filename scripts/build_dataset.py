@@ -67,6 +67,18 @@ def place(img_src, stem, split, b2, b3, dry):
                 "".join(f"{c} {x:.6f} {y:.6f} {w:.6f} {h:.6f}\n" for c, x, y, w, h in boxes))
 
 
+def _safe_out(path: Path, root: Path) -> Path:
+    """Resolve an output path and refuse traversal outside its root."""
+    rp, rr = path.resolve(), root.resolve()
+    if not rp.is_relative_to(rr):
+        raise ValueError(f"path escapes allowed root {rr}: {path}")
+    return rp
+
+
+OUT_BOX_STATS = _safe_out(PROC / "box_size_stats.csv", PROC)
+OUT_RFS = _safe_out(PROC / "rfs_table.csv", PROC)
+OUT_MANIFEST = _safe_out(PROC / "manifest.csv", PROC)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -149,82 +161,107 @@ def main():
             empties_tud.append((str(p.relative_to(RAW)), g, split, p))
         stats["per_split"][split]["tud_gv"] += 1
 
-    # ---------- Hagenbeek tiles (D3d, D4, D9) ----------
-    hag = RAW / "Platic-water hyathin" / "Annotated_images_labels" / "Annotated Images All"
+    # ---------- Tiled aerial sources: Hagenbeek (D3d, D4, D9) + Saigon (CP2) ----------
+    # Saigon groups: no reliable sequence id (DJI/Gopro stills) -> one group per
+    # original image (same discipline as Hagenbeek); split assigned via assign_splits.py
+    # and recorded in split_assignment.csv (D10 re-run for CP2).
+    saigon_dir = PROC / "saigon_src" / "extracted"
     empty_imgs = []
-    for p in sorted((hag / "images").glob("*.jpg")):
-        g = "hag_" + p.stem
-        split = assign[("hagenbeek", g)]
-        boxes = yolo_boxes(hag / "labels" / (p.stem + ".txt"))
-        if not boxes:
-            stats["empties"]["hagenbeek"] += 1
-            empty_imgs.append(p)
-            continue  # D9: excluded from negatives until CP3
-        im = Image.open(p)
-        W, H = im.size
-        nc, nr = max(1, (W - TILE) // STRIDE + 1), max(1, (H - TILE) // STRIDE + 1)
-        pos, emp = [], []
-        for r_ in range(nr):
-            for c_ in range(nc):
-                x0, y0 = min(c_ * STRIDE, W - TILE), min(r_ * STRIDE, H - TILE)
-                tb = []
-                for cls, cx, cy, bw, bh in boxes:
-                    bx0, by0 = (cx - bw / 2) * W, (cy - bh / 2) * H
-                    bx1, by1 = bx0 + bw * W, by0 + bh * H
-                    ix0, iy0 = max(bx0, x0), max(by0, y0)
-                    ix1, iy1 = min(bx1, x0 + TILE), min(by1, y0 + TILE)
-                    inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
-                    if inter / max(1e-9, (bx1 - bx0) * (by1 - by0)) >= MIN_AREA_FRAC:
-                        tb.append((HAG_NAMES[cls], ix0, iy0, ix1, iy1))
-                tinfo = f"x{x0}_y{y0}_s{STRIDE}"
-                (pos if tb else emp).append((f"hag_{p.stem}__x{x0}_y{y0}", (x0, y0), tb, tinfo))
-        k = min(len(emp), int(MAX_EMPTY_TILE_FRAC * len(pos)))
-        keep_empty = set(s for s, *_ in rng.sample(emp, k)) if k else set()
-        all_tiles = [(s, xy, tb, ti, True) for s, xy, tb, ti in pos] + \
-                    [(s, xy, tb, ti, False) for s, xy, tb, ti in emp if s in keep_empty]
-        for stem, (x0, y0), tb, ti, has_box in all_tiles:
-            b2, b3 = [], []
-            if has_box:
-                for name, ix0, iy0, ix1, iy1 in tb:
-                    nx = ((ix0 + ix1) / 2 - x0) / TILE  # YOLO center-x within tile
-                    ny = ((iy0 + iy1) / 2 - y0) / TILE
-                    nw = (ix1 - ix0) / TILE
-                    nh = (iy1 - iy0) / TILE
-                    b2.append((CLASS2["litter" if name != "hyacinth" else "hyacinth"], nx, ny, nw, nh))
-                    b3.append((CLASS3[{"ff_litter": "litter", "hyacinth": "hyacinth",
-                                       "ent_litter": "entangled_plastic"}[name]], nx, ny, nw, nh))
-            if not dry:
-                # unique temp per tile: hardlinking a reused temp inode would let
-                # the next crop.save() overwrite every earlier tile's pixels
-                tmp_dir = PROC / "_tile_tmp"
-                tmp_dir.mkdir(parents=True, exist_ok=True)
-                tmp = tmp_dir / f"{stem}.jpg"
-                im.crop((x0, y0, x0 + TILE, y0 + TILE)).save(tmp, quality=92)
-            else:
-                tmp = p
-            emit("hagenbeek", str(p.relative_to(RAW)),
-                 "+".join(sorted({n for n, *_ in tb})) if has_box else "",
-                 split, g, ti + ("" if has_box else "_empty"), stem, tmp, b2, b3, TILE, TILE)
-            if not dry:
-                tmp.unlink()
-            stats["tiles"]["pos" if has_box else "empty"] += 1
-            stats["box_counts"]["hagenbeek"][split] += len(b2)
-            stats["box_px_by_stem"][("hagenbeek", 640)][stem] = [b[3] * TILE for b in b2] + [b[4] * TILE for b in b2]
-            stats["box_px_by_stem"][("hagenbeek", 960)][stem] = [b[3] * TILE * 960 / 640 for b in b2] + [b[4] * TILE * 960 / 640 for b in b2]
-        stats["per_split"][split]["hagenbeek_orig"] += 1
+    for source, img_dir, lab_dir in (
+            ("hagenbeek", RAW / "Platic-water hyathin" / "Annotated_images_labels" / "Annotated Images All" / "images",
+             RAW / "Platic-water hyathin" / "Annotated_images_labels" / "Annotated Images All" / "labels"),
+            ("saigon", saigon_dir / "images", saigon_dir / "labels")):
+        for p in sorted(img_dir.glob("*.[jJ][pP][gG]")):
+            prefix = {"hagenbeek": "hag_", "saigon": "sai_"}[source]
+            g = prefix + p.stem
+            split = assign[(source, g)]
+            boxes = yolo_boxes(lab_dir / (p.stem + ".txt"))
+            if not boxes:
+                stats["empties"][source] += 1
+                if source == "hagenbeek":
+                    empty_imgs.append(p)
+                continue  # D9/CP3: verified-empty aerial images stay excluded (default)
+        # -- tiling (identical rules for both aerial sources) --
+            im = Image.open(p)
+            W, H = im.size
+            nc, nr = max(1, (W - TILE) // STRIDE + 1), max(1, (H - TILE) // STRIDE + 1)
+            pos, emp = [], []
+            for r_ in range(nr):
+                for c_ in range(nc):
+                    x0, y0 = min(c_ * STRIDE, W - TILE), min(r_ * STRIDE, H - TILE)
+                    tb = []
+                    for cls, cx, cy, bw, bh in boxes:
+                        bx0, by0 = (cx - bw / 2) * W, (cy - bh / 2) * H
+                        bx1, by1 = bx0 + bw * W, by0 + bh * H
+                        ix0, iy0 = max(bx0, x0), max(by0, y0)
+                        ix1, iy1 = min(bx1, x0 + TILE), min(by1, y0 + TILE)
+                        inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+                        if inter / max(1e-9, (bx1 - bx0) * (by1 - by0)) >= MIN_AREA_FRAC:
+                            tb.append((HAG_NAMES[cls], ix0, iy0, ix1, iy1))
+                    tinfo = f"x{x0}_y{y0}_s{STRIDE}"
+                    (pos if tb else emp).append((f"{prefix}{p.stem}__x{x0}_y{y0}", (x0, y0), tb, tinfo))
+            k = min(len(emp), int(MAX_EMPTY_TILE_FRAC * len(pos)))
+            keep_empty = set(s for s, *_ in rng.sample(emp, k)) if k else set()
+            all_tiles = [(s, xy, tb, ti, True) for s, xy, tb, ti in pos] + \
+                        [(s, xy, tb, ti, False) for s, xy, tb, ti in emp if s in keep_empty]
+            for stem, (x0, y0), tb, ti, has_box in all_tiles:
+                b2, b3 = [], []
+                if has_box:
+                    for name, ix0, iy0, ix1, iy1 in tb:
+                        nx = ((ix0 + ix1) / 2 - x0) / TILE  # YOLO center-x within tile
+                        ny = ((iy0 + iy1) / 2 - y0) / TILE
+                        nw = (ix1 - ix0) / TILE
+                        nh = (iy1 - iy0) / TILE
+                        b2.append((CLASS2["litter" if name != "hyacinth" else "hyacinth"], nx, ny, nw, nh))
+                        b3.append((CLASS3[{"ff_litter": "litter", "hyacinth": "hyacinth",
+                                           "ent_litter": "entangled_plastic"}[name]], nx, ny, nw, nh))
+                if not dry:
+                    # unique temp per tile: hardlinking a reused temp inode would let
+                    # the next crop.save() overwrite every earlier tile's pixels
+                    tmp_dir = PROC / "_tile_tmp"
+                    tmp_dir.mkdir(parents=True, exist_ok=True)
+                    tmp = tmp_dir / f"{stem}.jpg"
+                    im.crop((x0, y0, x0 + TILE, y0 + TILE)).save(tmp, quality=92)
+                else:
+                    tmp = p
+                emit(source, str(p.relative_to(RAW)) if source == "hagenbeek" else str(p),
+                     "+".join(sorted({n for n, *_ in tb})) if has_box else "",
+                     split, g, ti + ("" if has_box else "_empty"), stem, tmp, b2, b3, TILE, TILE)
+                if not dry:
+                    tmp.unlink()
+                stats["tiles"]["pos" if has_box else "empty"] += 1
+                stats["box_counts"][source][split] += len(b2)
+                stats["box_px_by_stem"][(source, 640)][stem] = [b[3] * TILE for b in b2] + [b[4] * TILE for b in b2]
+                stats["box_px_by_stem"][(source, 960)][stem] = [b[3] * TILE * 960 / 640 for b in b2] + [b[4] * TILE * 960 / 640 for b in b2]
+            stats["per_split"][split][source + "_orig"] += 1
 
     # ---------- aerial cap (D4) ----------
-    pos_tiles = [r for r in man if r["source"] == "hagenbeek" and r["n_boxes"] > 0 and r["split"] == "train"]
-    n_train = sum(1 for r in man if r["split"] == "train")
-    share_pre = len(pos_tiles) / max(1, n_train)
+    n_train_before = sum(1 for r in man if r["split"] == "train")
+    aerial_pool = [r for r in man if r["source"] in ("hagenbeek", "saigon")
+                   and r["n_boxes"] > 0 and r["split"] == "train"]
+    n_non_aerial_train = n_train_before - len(aerial_pool)
+    share_pre = {}
+    for aerial_src in ("hagenbeek", "saigon"):
+        share_pre[aerial_src] = sum(1 for r in aerial_pool if r["source"] == aerial_src) / max(1, n_train_before)
+    combined = len(aerial_pool) / max(1, n_train_before)
     cap_applied = False
-    if share_pre > args.max_aerial_share and pos_tiles:
-        K = int(args.max_aerial_share * n_train / (1 + args.max_aerial_share))
-        drop = {r["final_stem"] for r in rng.sample(pos_tiles, max(0, len(pos_tiles) - K))}
-        keep_rows, dropped = [], 0
+    drop = set()
+    if combined > args.max_aerial_share and aerial_pool:
+        # D4 (CP2 extension): cap COMBINED aerial share; drop from the dominant
+        # source (saigon) so aerial tiles cannot dominate the merged train set
+        target = int(args.max_aerial_share * n_non_aerial_train / (1.0 - args.max_aerial_share))
+        sai_pool = [r for r in aerial_pool if r["source"] == "saigon"]
+        n_drop = min(len(sai_pool), max(0, len(aerial_pool) - target))
+        if n_drop > 0:
+            drop = {r["final_stem"] for r in rng.sample(sai_pool, n_drop)}
+            cap_applied = True
+    if cap_applied:
+        dropped = 0
+        keep_rows = []
         for r in man:
             if r["final_stem"] in drop and r["split"] == "train":
                 dropped += 1
+                stats["box_counts"][r["source"]]["train"] -= r["n_boxes"]
                 if not dry:
                     for tree in ("merged2", "merged3"):
                         for sub in ("images", "labels"):
@@ -233,12 +270,11 @@ def main():
                 continue
             keep_rows.append(r)
         man = keep_rows
-        cap_applied = True
         stats["tiles_dropped"] = dropped
         stats["_dropped_stems"] = drop
         stats["tiles"]["pos"] -= dropped
     n_train = sum(1 for r in man if r["split"] == "train")
-    pos_after = sum(1 for r in man if r["source"] == "hagenbeek" and r["n_boxes"] > 0 and r["split"] == "train")
+    pos_after = sum(1 for r in man if r["source"] in ("hagenbeek", "saigon") and r["n_boxes"] > 0 and r["split"] == "train")
     share_post = pos_after / max(1, n_train)
 
     # ---------- background negatives (D8) ----------
@@ -302,7 +338,7 @@ def main():
                 for r in rows:
                     expanded += [img_rel(r)] * r["rfs_repeat"]
                 (PROC / "lists" / "train.txt").write_text("\n".join(expanded) + "\n")
-            for src in ("fml", "tud_gv", "hagenbeek"):
+            for src in ("fml", "tud_gv", "hagenbeek", "saigon"):
                 (PROC / "lists" / f"{src}_{split}.txt").write_text(
                     "\n".join(img_rel(r) for r in rows if r["source"] == src) + "\n")
         def yaml_for(name, val_list, test_list, names):
@@ -314,7 +350,7 @@ def main():
                              f"test: {(PROC/'lists'/test_list).as_posix()}\n"
                              f"nc: {nc if isinstance(nc, int) else len(nc)}\n"
                              f"names: [{', '.join(nc if isinstance(nc, list) else list(nc))}]\n")
-        for src, nm in (("fml", "fml"), ("tud_gv", "tud_gv"), ("hagenbeek", "hagenbeek_tiles")):
+        for src, nm in (("fml", "fml"), ("tud_gv", "tud_gv"), ("hagenbeek", "hagenbeek_tiles"), ("saigon", "saigon_tiles")):
             yaml_for(nm, f"{src}_val.txt", f"{src}_test.txt", None)
         yaml_for("combined", "val_base.txt", "test_base.txt", None)
 
@@ -371,7 +407,7 @@ def main():
     drop = stats.get("_dropped_stems", set())
     for (src, s), by_stem in stats["box_px_by_stem"].items():
         for stem, vals in by_stem.items():
-            if src != "hagenbeek" or stem not in drop:
+            if stem not in drop:
                 stats["box_px"][(src, s)].extend(vals)
     bx_rows = []
     for (src, s), vals in sorted(stats["box_px"].items()):
@@ -382,17 +418,17 @@ def main():
                         "share_lt8px": round(float((a < 8).mean()), 3),
                         "share_lt16px": round(float((a < 16).mean()), 3)})
     if not dry:
-        with open(PROC / "box_size_stats.csv", "w", newline="", encoding="utf-8") as f:
+        with open(OUT_BOX_STATS, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=list(bx_rows[0].keys()))
             w.writeheader(); w.writerows(bx_rows)
-        with open(PROC / "rfs_table.csv", "w", newline="", encoding="utf-8") as f:
+        with open(OUT_RFS, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=list(rfs_rows[0].keys()))
             w.writeheader(); w.writerows(rfs_rows)
 
     # ---------- manifest + stats ----------
     hdr = ["source", "original_path", "original_class", "mapped_class", "split",
            "group_id", "tile_info", "final_stem", "n_boxes", "width", "height", "rfs_repeat"]
-    with open(PROC / "manifest.csv", "w", newline="", encoding="utf-8") as f:
+    with open(OUT_MANIFEST, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=hdr, extrasaction="ignore")
         w.writeheader(); w.writerows(man)
     out = {"per_split": {k: dict(v) for k, v in stats["per_split"].items()},
@@ -400,7 +436,7 @@ def main():
            "bg_used": stats["bg_used"],
            "box_counts": {k: dict(v) for k, v in stats["box_counts"].items()},
            "tiles": dict(stats["tiles"]),
-           "aerial_share_pre_cap": round(share_pre, 3),
+           "aerial_share_pre_cap": {k: round(v, 3) for k, v in share_pre.items()},
            "aerial_share_post_cap": round(share_post, 3),
            "cap_applied": cap_applied,
            "rfs": {"t_used": t_use, "r": {k: round(v, 2) for k, v in r_use.items()},

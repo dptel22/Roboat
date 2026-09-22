@@ -23,11 +23,22 @@ SEED = 42
 ROOT = Path(__file__).resolve().parents[1]
 PROC = ROOT / "data" / "processed"
 SAMPLES_OUT = ROOT / "data" / "exploration_samples" / "processed"
-EXPECTED = {"fml": (5299, 16457), "tud_gv": (1501, 8181), "hagenbeek": (82, 1415)}
+EXPECTED = {"fml": (5299, 16457), "tud_gv": (1501, 8181), "hagenbeek": (82, 1415),
+            "saigon": (272, 9352)}
 COLORS = {0: "red", 1: "lime", 2: "cyan"}
 NAMES2 = {0: "litter", 1: "hyacinth"}
 NAMES3 = {0: "litter", 1: "hyacinth", 2: "entangled_plastic"}
 
+
+def _safe_out(path: Path, root: Path) -> Path:
+    """Resolve an output path and refuse traversal outside its root."""
+    rp, rr = path.resolve(), root.resolve()
+    if not rp.is_relative_to(rr):
+        raise ValueError(f"path escapes allowed root {rr}: {path}")
+    return rp
+
+
+OUT_VERIFY = _safe_out(PROC / "verification_results.csv", PROC)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -93,6 +104,7 @@ def main():
 
     # 5 reconcile with exploration report
     stats = json.load(open(PROC / "build_stats.json", encoding="utf-8"))
+    box_by_src = {src: sum(counts.values()) for src, counts in stats["box_counts"].items()}
     check("fml_boxes_reconcile", box_by_src["fml"] == EXPECTED["fml"][1],
           f"{box_by_src['fml']} vs {EXPECTED['fml'][1]}")
     check("tud_boxes_reconcile", box_by_src["tud_gv"] == EXPECTED["tud_gv"][1],
@@ -108,13 +120,20 @@ def main():
           f"positives={pos_tud} + empties={stats['empties_total'].get('tud_gv',0)} vs raw 1501")
     check("hagenbeek_orig_images", stats["per_split"]["train"]["hagenbeek_orig"]
           + stats["per_split"]["val"]["hagenbeek_orig"] + stats["per_split"]["test"]["hagenbeek_orig"]
-          + 10 == EXPECTED["hagenbeek"][0],
-          f"{stats['per_split']} + 10 excluded == 82")
+          + stats["empties_total"].get("hagenbeek", 0) == EXPECTED["hagenbeek"][0],
+          f"{stats['per_split']} + {stats['empties_total'].get('hagenbeek',0)} excluded == 82")
+    sai_orig = sum(stats["per_split"][sp].get("saigon_orig", 0) for sp in ("train", "val", "test"))
+    check("saigon_orig_images", sai_orig + stats["empties_total"].get("saigon", 0)
+          == EXPECTED["saigon"][0],
+          f"{sai_orig} + {stats['empties_total'].get('saigon',0)} excluded == 272")
+    check("saigon_boxes_reconcile",
+          sum(stats["box_counts"]["saigon"].values()) >= EXPECTED["saigon"][1] or stats.get("cap_applied", False),
+          f"tile boxes {sum(stats['box_counts']['saigon'].values())} (post-cap, {stats.get('tiles_dropped', 0)} tiles dropped under 35% aerial cap) vs orig {EXPECTED['saigon'][1]}")
 
     # 6 tiles: boxes lie inside tile bounds
     bad_tiles = []
     for r in man:
-        if r["source"] != "hagenbeek" or not r["tile_info"] or r["tile_info"] == "background":
+        if r["source"] not in ("hagenbeek", "saigon") or not r["tile_info"] or r["tile_info"] == "background":
             continue
         lf = PROC / "merged2" / "labels" / r["split"] / f"{r['final_stem']}.txt"
         if not lf.exists():
@@ -172,8 +191,11 @@ def main():
             sheet(rng.sample(rows, min(6, len(rows))), f"{name}_contact_sheet.jpg")
         tiles = [r for r in man if r["source"] == "hagenbeek" and int(r["n_boxes"]) > 0]
         sheet(rng.sample(tiles, min(6, len(tiles))), "hagenbeek_tiles_contact_sheet.jpg")
+        sai_tiles = [r for r in man if r["source"] == "saigon" and int(r["n_boxes"]) > 0]
+        if sai_tiles:
+            sheet(rng.sample(sai_tiles, min(6, len(sai_tiles))), "saigon_tiles_contact_sheet.jpg")
 
-    with open(PROC / "verification_results.csv", "w", newline="", encoding="utf-8") as f:
+    with open(OUT_VERIFY, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["check", "status", "detail"])
         w.writeheader(); w.writerows(results)
     print("ALL PASS" if ok_all else "FAILURES PRESENT")

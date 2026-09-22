@@ -76,8 +76,8 @@ IndexError guard (7); `--dry-run` now implies `--skip-clip` (8); dead
 
 ### External review (pasted transcript) — residual items resolved
 - MERGE_REPORT was stale (written pre-fix build): regenerated numbers verified
-  against the post-fix manifest; fml train row now correctly stated as
-  2,786 pos + 247 bg = 3,033 (table previously double-counted the bg).
+  against the post-fix manifest; fml train row in CP1 was correctly stated as
+  2,786 pos + 247 bg = 3,033 (table previously double-counted the bg; updated in CP2 to 350 bg).
 - Calibration set: regenerated at 22:13 AFTER the 22:08 rebuild — contains the
   fixed tile pixels (mtime check).
 - Verification CSV: 15 checks, no duplicate names, from the post-fix run.
@@ -89,3 +89,15 @@ IndexError guard (7); `--dry-run` now implies `--skip-clip` (8); dead
 - `_dropped_stems` private stats key: local-only (not serialized); accepted.
 - Known latent: `box_counts` not decremented under an active aerial cap;
   background manifest dims hardcoded 1920×1080 (true for both source datasets).
+
+## 2026-09-22 — main (CP2 / CP3 execution)
+
+- **main**: D5 figures updated in DECISIONS_LOG.md against finding #4 fix (median 4.9px @640, 67% <8px whole-image letterbox).
+- **main**: Saigon integrated into group-split pipeline (`assign_splits.py`): 272 image-level groups assigned via greedy partition (train 218 / val 27 / test 27, err 0.003 vs KK 0.931).
+- **main**: Aerial cap formula in `build_dataset.py` corrected to cap combined aerial positive share at 35.0% (`n_drop` computed against non-aerial denominator); `box_counts` decrement implemented for dropped tiles; `box_px` accumulation updated to include Saigon in-tile stats.
+- **main**: Dataset rebuilt with Saigon merged (`merged2`/`merged3`, 9,428 manifest rows, 7,368 train / 900 val / 1,160 test images, 34,048 total boxes).
+- **main**: In-tile box size distribution computed for Saigon specifically (`box_size_stats.csv`): median 39.8px @640 (0.3% <8px, 10.5% <16px); median 59.7px @960 (0.0% <8px, 2.1% <16px) — detectability floor confirmed.
+- **main**: D7 RFS recomputed with Saigon hyacinth tiles: `f_hyacinth` = 0.1834, `f_litter` = 0.7720; `t = 2.0` chosen to achieve `r_hyacinth = 3.30` (inside [3, 6]) and `r_litter = 1.61`; `train.txt` expanded to 10,070 lines.
+- **main**: CP3 criterion applied: all 10 empty-label Hagenbeek images remain excluded (no human review of contact sheet occurred; false-negative avoidance prioritized).
+- **main**: Fixed `verify_dataset.py` (`box_by_src` definition, aerial tile bounds check for both Hagenbeek and Saigon, contact sheet generation). Re-verified with 16/16 checks **ALL PASS**.
+- **main**: `MERGE_REPORT.md` regenerated; `reports/STATE_REPORT.md` written for CP4 sign-off.

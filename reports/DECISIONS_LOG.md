@@ -8,23 +8,78 @@ Pending entries are marked PENDING and filled at their checkpoint.
 - **Evidence (local):** [Confirmed] 10,598 jpg in folder; `full_dataset` = 3,711+1,059+529 = 5,299 images; 27 `single_sets/setN` folders are hash-identical duplicates (`data/exploration_results.json`, duplicates section: 8,823 groups / 12,373 redundant files, all internal). [Confirmed] YOLO id 0 ↔ COCO `categories: [{"id": 1, "name": "garbage"}]` (box counts match 2× exactly: 32,914 YOLO vs 16,457 COCO = single_sets duplication).
 - No deviation.
 
-## D3a — Filename/grouping analysis
+## D2 — Class mapping & taxonomy unification
 
+- **2-class primary (`merged2`):** [Confirmed] Class 0 = `litter` (maps FML `garbage`, TUD-GV `litter`, Hagenbeek/Saigon `ff_litter` + `ent_litter`, AquaTrash all 4 categories); Class 1 = `hyacinth` (maps Hagenbeek/Saigon `hyacinth`).
+- **3-class ablation (`merged3`):** [Confirmed] Class 0 = `litter`, Class 1 = `hyacinth`, Class 2 = `entangled_plastic` (maps Hagenbeek/Saigon `ent_litter`).
+- Images are shared across `merged2` and `merged3` via hardlinks; label files are written separately. Background negative frames contain empty label files (`.txt` exists, 0 lines).
+
+## D3 — Grouping and leakage discipline
+
+### D3a — Filename/grouping analysis
 - **FML** `image_YYYYMMDD_HHMMSS_micro.jpg`: ~1 fps capture bursts; 4 capture days (2024-10-04, 10-06, 10-07, 11-18). Original train/val/test split interleaves timestamps from the same bursts (val starts `084611`, train `084612`, test `084615`) → sequence leakage expected. [Confirmed from filenames + timestamps]
 - **TUD-GV** `expNN_KKK.jpg`: 30 distinct `expNN` prefixes, sizes 4–151 images. These act as experiment/session ids (video-derived frames per experiment) → reliable group id. [Confirmed structure from filenames; semantics Inferred from naming + paper title "Floating Litter Detection"]
 - **Hagenbeek**: DJI/Gopro aerial stills; each original image = one group; all tiles inherit the group (D3d). [Confirmed from filenames]
+- **Saigon**: 272 DJI/Gopro aerial stills; each original image = one group; all tiles inherit the group. [Confirmed from filenames]
 
-## D3b/c tooling — leakage audit implementation
-
+### D3b/c tooling — leakage audit implementation
 - pHash implemented in-repo via `cv2.dct` (8×8 low-freq, median threshold, 64-bit Hamming) because the `imagehash` package is not installed in this environment. [Confirmed: import check]
 - CLIP: `open-clip-torch 3.3.0` installed; model `ViT-B-32` OpenAI weights loaded as `ViT-B-32-quickgelu` to match OpenAI's activation (open-clip 3.x warns of QuickGELU mismatch otherwise). CPU-only (no CUDA). https://github.com/mlfoundations/open_clip [Confirmed: pip install + import]
 - Audit results (FML original split, 1,588 val+test images, full run, seed 42): **[Confirmed]**
-  - pHash nearest-train Hamming ≤8/64 (near-duplicate): **183/1,588 = 11.5%**; median
-    distance 14, p10 = 8.
+  - pHash nearest-train Hamming ≤8/64 (near-duplicate): **183/1,588 = 11.5%**; median distance 14, p10 = 8.
   - CLIP ViT-B/32 nearest-train cosine ≥0.95: **1,181/1,588 = 74.4%**.
-  - Interpretation: the original FML split leaks heavily — three quarters of val/test
-    frames have a visually near-identical train frame. Group-based re-split is mandatory (D3c).
+  - Interpretation: the original FML split leaks heavily — three quarters of val/test frames have a visually near-identical train frame. Group-based re-split is mandatory (D3c).
   - Raw data: `data/processed/audit/leakage_audit.csv`.
+- 600 s session gap locked [Confirmed]: post-split leakage pHash ≤8 = 0.8% (8/1,034), CLIP ≥0.97 = 1 image, ≥0.98 = 0 (median cosine 0.935; the 16.6% at ≥0.95 are same-looking water, not near-duplicates). Original split was 11.5% / 74.4%.
+- Greedy largest-first chosen over Karmarkar-Karp [Confirmed] (`audit/assignment_comparison.csv`): greedy err 0.008–0.031 vs KK ~0.92 (KK equal-sums partition cannot target 8:1:1).
+
+## D4 — Tiling configuration & aerial share cap
+
+- **Tiling parameters:** [Confirmed] Tile size $640 \times 640$, stride $512$ (20% tile overlap). Cropped boundary boxes require $\ge 40\%$ intersection area fraction (`MIN_AREA_FRAC = 0.40`) to be retained. Empty tiles capped at $\le 15\%$ of positive tiles (`MAX_EMPTY_TILE_FRAC = 0.15`).
+- **Combined aerial positive share cap:** [Confirmed] Combined aerial positive tiles in train (Hagenbeek + Saigon) capped at $\le 35.0\%$ of total train images (`MAX_AERIAL_SHARE = 0.35`). Surplus positive tiles dropped from dominant source (Saigon), seed 42. Exact post-cap share: **35.00%** (2,579 / 7,368 tiles).
+
+## D5 — Saigon River dataset — VERIFIED + PROFILED (Checkpoint 2)
+
+- Download [Confirmed]: `annotated_images_labels.zip` 942,067,274 bytes (byte-exact vs 4TU listing) + README.docx via https://data.4tu.nl/file/78bb4822-7b70-4632-887a-7cacd344024e/<uuid>. License CC BY 4.0 (dataset page). Extracted to data/processed/saigon_src/extracted.
+- Profile [Confirmed] (`scripts/profile_saigon.py`, `data/processed/saigon_profile.json`): 272 images + 272 YOLO labels, classes.txt = ff_litter/hyacinth/ent_litter — identical taxonomy to Hagenbeek (same TU Delft lineage). 9,352 boxes (ent_litter 4,299 / ff_litter 2,036 / hyacinth 3,017). 0 malformed lines, 0 corrupt, 0 orphans, 0 within/cross duplicates. Sizes 4048×3032–5568×4872 (3 sizes).
+- Box px @640 (whole-image letterbox, corrected after stem-matching bug fix): median **4.9**, p10 1.9, **67% <8px**, 84% <16px. At 960: median 7.3, 47%<8px.
+- Post-tiling in-tile stats: median **39.8px @640 (0.3% <8px)** and **59.7px @960 (0.0% <8px)**. Detectability floor confirmed.
+- Trade-off accepted: merging spends Saigon's value as an independent OOD evaluation set; Bengaluru T9 is the real generalization test.
+
+## D6 — AquaTrash OOD evaluation set
+
+- **Evidence (local):** [Confirmed] AquaTrash dataset (369 images, 469 boxes) converted to YOLO format with all categories mapped to class 0 `litter` at `data/processed/ood_aquatrash/`.
+- Maintained as an isolated, evaluation-only benchmark (`yamls/ood_aquatrash.yaml`, `lists/ood_aquatrash.txt`). Never included in training or validation lists.
+
+## D7 — RFS t value
+
+- **t = 2.0 → r_hyacinth = 3.30, r_litter = 1.61 [Confirmed from rfs_table.csv].**
+  Post-Saigon merge recompute: with Saigon's hyacinth tiles in train, `f_hyacinth` rises from 0.0765 to **0.1834** (18.34% of training images contain hyacinth); `f_litter` = 0.7720. At t=0.75, r_hyacinth was 2.02 (<3); extending the grid to t=2.0 lands `r_hyacinth` at 3.30 (inside the required [3, 6] range).
+  `lists/train.txt` expands from 7,368 to 10,070 lines via integer-floor repeats.
+
+## D8 — Background negative frame budget
+
+- **Evidence (local):** [Confirmed] Background empty frames included in train to provide negative supervision against false positives. Budget capped at $\le 10\%$ of training set (`MAX_BG_FRAC = 0.10`).
+- 350 background frames used (within the 701 max budget). Sourced strictly from verified-empty FML frames (TUD-GV contains 0 empty frames).
+
+## D9 — Hagenbeek empty-label quarantine & CP3 exclusion
+
+- **Evidence (local):** [Confirmed] 10 Hagenbeek original images with empty label files quarantined during exploration (`data/exploration_samples/processed/hagenbeek_empty_labels_contact_sheet.jpg`).
+- Under CP3 confidence criterion: all 10 remain excluded because unreviewed aerial frames risk introducing false-negative supervision (unannotated hyacinth/litter labeled as background), and the background budget is already adequately supplied by FML.
+
+## D10 — Split assignment discipline & per-source isolation
+
+- **Group-based assignment across all 4 sources [Confirmed]:**
+  - FML (10 groups, 600s gap): greedy 80.5% / 11.1% / 8.5% (err 0.031)
+  - TUD-GV (30 groups, expNN): greedy 80.4% / 9.9% / 9.7% (err 0.008)
+  - Hagenbeek (82 groups, 1/orig): greedy 80.5% / 9.8% / 9.8% (err 0.009)
+  - Saigon (272 groups, 1/orig): greedy 80.1% / 9.9% / 9.9% (err 0.003)
+  All 4 sources assigned via seeded greedy largest-first partition; all tiles inherit original image group (zero inter-split sequence or tile leakage).
+  Per-source evaluation maintained via isolated yamls (`fml_c2/c3`, `tud_gv_c2/c3`, `hagenbeek_tiles_c2/c3`, `saigon_tiles_c2/c3`, `combined_c2/c3`, `ood_aquatrash`).
+
+## D11 — imgsz recommendation
+
+- imgsz = 960 [Confirmed from box_size_stats.csv]: FML <8px share 18.1%@640 → 2.6%@960; median 14→21px. Set as constant in kaggle/train_baseline.py.
 
 ## T8 — Hailo export routes — VERIFIED
 
@@ -32,83 +87,26 @@ Pending entries are marked PENDING and filled at their checkpoint.
   `model.export(format="hailo", name="hailo8l", imgsz=..., data=...)` runs the pipeline
   `.pt -> ONNX -> Hailo parse -> INT8 calibration -> HEF` and is validated on Hailo-8L
   (HailoRT 4.23 + DFC 3.33). https://docs.ultralytics.com/integrations/hailo/
-  - Note: this route REQUIRES the DFC (Linux x86_64) at export time; ONNX is an
-    intermediate that gets deleted. Per the task instruction we still document
-    ONNX + `hailomz` as the primary explicit route and the native export as the
-    integrated alternative. (Task deviation none — D-route choice was mandated.)
-- **DFC 3.x is the correct line for Hailo-8L.** [Confirmed] Ultralytics docs:
-  "Hailo-8 / Hailo-8L → DFC v3.x; Hailo-10H/15 → v5.x". Same statement in the Hailo
-  Model Zoo README: "Hailo-8 and Hailo-8L devices are supported on the Hailo Model Zoo
-  v2.x branch, in combination with the Hailo Dataflow Compiler v3.x branch."
-  https://github.com/hailo-ai/hailo_model_zoo
-- **Model Zoo Hailo-8L network list includes both target models.** [Confirmed]
-  `docs/public_models/HAILO8L/HAILO8L_object_detection.rst` lists `yolov8n` and
-  `yolov11n` (spelled yolov11n, i.e. Ultralytics yolo11n). Many more (yolov5s,
-  yolov8s/m/l, yolov10n/s, yolov12n...). HEF compilation is Linux x86_64-only;
-  Raspberry Pi 5 only runs the compiled HEF via HailoRT. [Confirmed, same docs]
-- **Calibration / compression:** docs recommend in-domain calibration images, ≥1,024
-  for production; INT8-only export. `compression_level=0` / 16-bit fallback to be set
-  in the model script per task; forum-level citation to be added at T8 build time.
-  [Confirmed for ≥1024 recommendation]
+  - Note: this route REQUIRES the DFC (Linux x86_64) at export time; ONNX is an intermediate that gets deleted.
+- **DFC 3.x is the correct line for Hailo-8L.** [Confirmed] Ultralytics docs: "Hailo-8 / Hailo-8L → DFC v3.x; Hailo-10H/15 → v5.x".
+- **Model Zoo Hailo-8L network list includes both target models.** [Confirmed] `docs/public_models/HAILO8L/HAILO8L_object_detection.rst` lists `yolov8n` and `yolov11n`.
+- **Calibration / compression:** docs recommend in-domain calibration images, ≥1,024 for production; INT8-only export. Calibration set built: 1,024 images, hyacinth share 0.25, balanced fml 485 / tud_gv 193 / hagenbeek 346 (`data/processed/calib/`). [Confirmed]
 
-## T9 — Saigon pre-labelling weights — VERIFIED
+## T9_WEIGHTS — Saigon pre-labelling weights — VERIFIED
 
-- **Zenodo record 12800597 [Confirmed]:** "Yolov8 Model weights (Detection of floating
-  plastic litter and water hyacinths)", Tianlong Jia, TU Delft, published 2024-07-23,
-  **License CC-BY-4.0**, file `trained_weights.zip` (~11.3 MB, MD5 fba31bd...). Two
-  models: plastic litter and water hyacinth, Saigon River study (Environmental
-  Research: Water, 2025). Code: https://github.com/TianlongJia/deep_plastic_YoloV8
-  https://zenodo.org/records/12800597
+- **Zenodo record 12800597 [Confirmed]:** "Yolov8 Model weights (Detection of floating plastic litter and water hyacinths)", Tianlong Jia, TU Delft, published 2024-07-23, **License CC-BY-4.0**, file `trained_weights.zip` (~11.3 MB, MD5 fba31bd...).
+- Published models detect the 3-class taxonomy: `ff_litter` (0), `hyacinth` (1), `ent_litter` (2), from the Saigon River study (Environmental Research: Water, 2025). Code: https://github.com/TianlongJia/deep_plastic_YoloV8
 
-## D5 — Saigon River dataset — VERIFIED + PROFILED (Checkpoint 2)
+## CP2/CP3 — Checkpoint decisions (2026-09-22)
 
-- Download [Confirmed]: `annotated_images_labels.zip` 942,067,274 bytes (byte-exact
-  vs 4TU listing) + README.docx via https://data.4tu.nl/file/78bb4822-7b70-4632-887a-7cacd344024e/<uuid>.
-  License CC BY 4.0 (dataset page). Extracted to data/processed/saigon_src/extracted
-  (data/raw is read-only, so new downloads live under data/processed).
-- Profile [Confirmed] (`scripts/profile_saigon.py`, `data/processed/saigon_profile.json`):
-  272 images + 272 YOLO labels, classes.txt = ff_litter/hyacinth/ent_litter —
-  identical taxonomy to Hagenbeek (same TU Delft lineage). 9,352 boxes
-  (ent_litter 4,299 / ff_litter 2,036 / hyacinth 3,017). 0 malformed lines,
-  0 corrupt, 0 orphans, 0 within/cross duplicates. Sizes 4048×3032–5568×4872 (3 sizes).
-  Box px @640: median 7.5, 54% <8px → this source is very small-object; if merged
-  it needs the same tiling treatment as Hagenbeek. NOT merged (per D5) — proposed
-  mapping ff_litter→litter, hyacinth→hyacinth, ent_litter→entangled_plastic
-  [Inferred from identical names].
-- README.docx excerpt in profile JSON.
-
-## D3 — final grouping/assignment (locked at Checkpoint 1 follow-up)
-
-- 600 s session gap locked [Confirmed]: post-split leakage pHash ≤8 = 0.8%
-  (8/1,034), CLIP ≥0.97 = 1 image, ≥0.98 = 0 (median cosine 0.935; the 16.6%
-  at ≥0.95 are same-looking water, not near-duplicates). Original split was
-  11.5% / 74.4%.
-- Greedy largest-first chosen over Karmarkar-Karp [Confirmed]
-  (`audit/assignment_comparison.csv`): greedy err 0.008–0.031 vs KK ~0.92
-  (KK equal-sums partition cannot target 8:1:1).
-
-## D7 — RFS t value
-
-- t = 0.75 → r_hyacinth = 3.13 [Confirmed from rfs_table.csv]. Grid extended
-  beyond the LVIS-style values because f_hyacinth = 0.077 (LVIS t=0.001 scale is
-  ~77× smaller); logged as deviation in MERGE_REPORT §5.
-
-## D11 — imgsz recommendation
-
-- imgsz = 960 [Confirmed from box_size_stats.csv]: FML <8px share 18.1%@640 →
-  2.6%@960; median 14→21px. Set as constant in kaggle/train_baseline.py.
-
-## Deployment verification summary
-
-- All Hailo facts (native export, DFC 3.x for Hailo-8L, yolov8n+yolov11n in
-  HAILO8L model-zoo list, ≥1,024 calib images, Linux x86_64 compile-only) —
-  see T8 section above with URLs. Compression_level=0 note: Hailo docs state
-  default calibration uses 4-bit weight quantization above 1,024 images — to be
-  set explicitly in the model script (EXPORT_HAILO.md). Calibration set built:
-  1,024 images, hyacinth share 0.25, balanced fml 485 / tud_gv 193 / hagenbeek
-  346 (`data/processed/calib/`). [Confirmed]
-
-## D8/Hailo/Kaggle — remaining PENDING items
+- **CP2 = MERGE Saigon via tiling** (user decision (a)). Conditions implemented:
+  1. Post-tiling in-tile box stats reported in MERGE_REPORT §4b (detectability floor improves from median 4.9px / 67% <8px pre-tiling letterbox to median 39.8px / 0.3% <8px at 640 in-tile and median 59.7px / 0.0% <8px at 960 in-tile). [Confirmed]
+  2. D7 RFS recomputed on the new train split (f_hyacinth = 0.1834) → chosen t = 2.0 yields r_hyacinth = 3.30, r_litter = 1.61. [Confirmed from rfs_table.csv]
+  3. D10: Saigon assigned via its own group-based split (272 image groups, greedy fill 80.1/9.9/9.9) in split_assignment.csv; per-source yamls and split lists generated. [Confirmed from build output]
+  4. Aerial cap extended (D4): combined Hagenbeek+Saigon positive-tile share capped at 35.0% of train (2,579 / 7,368 tiles); surplus dropped from dominant contributor (Saigon), seed 42. [Confirmed: 35.00% exact]
+  5. Trade-off accepted: merging spends Saigon's value as an independent-river OOD check. Accepted because Bengaluru T9 is the real generalization test, not Saigon. Paper trail recorded.
+- **CP3 = the 10 empty-label Hagenbeek images stay EXCLUDED** (user criterion: only confidently object-free frames may serve as negatives; false-negative supervision is worse than losing 10 images; D8 budget unaffected at 350/701). No human review of `hagenbeek_empty_labels_contact_sheet.jpg` occurred.
+- **CP4 = held** until full state report and regenerated MERGE_REPORT presented.
 
 - Kaggle dataset upload specifics: PENDING (T6).
 - Ultralytics duplicate-train-list acceptance for RFS: PENDING (T3, D7).
