@@ -30,15 +30,20 @@ NAMES2 = {0: "litter", 1: "hyacinth"}
 NAMES3 = {0: "litter", 1: "hyacinth", 2: "entangled_plastic"}
 
 
-def _safe_out(path: Path, root: Path) -> Path:
-    """Resolve an output path and refuse traversal outside its root."""
-    rp, rr = path.resolve(), root.resolve()
-    if not rp.is_relative_to(rr):
-        raise ValueError(f"path escapes allowed root {rr}: {path}")
-    return rp
+def _fixed_out(root: Path, name: str) -> Path:
+    """Output path for a bare filename under a trusted root.
+
+    Callers pass literal filenames only; reject anything that could climb out
+    (absolute, '..' parts). No resolve(): joining a trusted constant with a
+    checked literal cannot escape the root.
+    """
+    p = Path(name)
+    if p.is_absolute() or ".." in p.parts:
+        raise ValueError(f"output name must be a bare filename: {name}")
+    return root / p
 
 
-OUT_VERIFY = _safe_out(PROC / "verification_results.csv", PROC)
+OUT_VERIFY = _fixed_out(PROC, "verification_results.csv")
 
 def main():
     ap = argparse.ArgumentParser()
@@ -128,7 +133,8 @@ def main():
           f"{sai_orig} + {stats['empties_total'].get('saigon',0)} excluded == 272")
     check("saigon_boxes_reconcile",
           sum(stats["box_counts"]["saigon"].values()) >= EXPECTED["saigon"][1] or stats.get("cap_applied", False),
-          f"tile boxes {sum(stats['box_counts']['saigon'].values())} (post-cap, {stats.get('tiles_dropped', 0)} tiles dropped under 35% aerial cap) vs orig {EXPECTED['saigon'][1]}")
+          f"tile boxes {sum(stats['box_counts']['saigon'].values())} (post-cap, "
+          f"{stats.get('tiles_dropped', 'count not recorded in this build_stats.json')} tiles dropped under 35% aerial cap) vs orig {EXPECTED['saigon'][1]}")
 
     # 6 tiles: boxes lie inside tile bounds
     bad_tiles = []

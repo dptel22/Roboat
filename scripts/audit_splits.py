@@ -28,17 +28,30 @@ MANIFEST_HEADER = ["source", "original_path", "original_class", "mapped_class",
                    "split", "group_id", "tile_info"]
 
 
+def _fixed_out(root: Path, name: str) -> Path:
+    """Output path for a bare filename under a trusted root.
+
+    Callers pass literal filenames only; reject anything that could climb out
+    (absolute, '..' parts). No resolve(): joining a trusted constant with a
+    checked literal cannot escape the root.
+    """
+    p = Path(name)
+    if p.is_absolute() or ".." in p.parts:
+        raise ValueError(f"output name must be a bare filename: {name}")
+    return root / p
+
+
+def _out(name: str) -> Path:
+    return _fixed_out(AUDIT, name)
+
+
 def _under(path: Path, root: Path) -> Path:
-    """Resolve path and refuse traversal outside root (no .., no escape)."""
+    """Read-side guard: resolve a (data-derived) path and refuse escape from root."""
     rp = path.resolve()
     root_r = root.resolve()
     if not rp.is_relative_to(root_r):
         raise ValueError(f"path escapes allowed root {root_r}: {path}")
     return rp
-
-
-def _out(name: str) -> Path:
-    return _under(AUDIT / name, AUDIT)
 
 
 def _rel_to_raw(rel: str) -> Path:

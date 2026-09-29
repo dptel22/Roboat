@@ -75,17 +75,22 @@ def assign_kk(sizes, fr=(0.8, 0.1, 0.1)):
     return out
 
 
-def _safe_out(path: Path, root: Path) -> Path:
-    """Resolve an output path and refuse traversal outside its root."""
-    rp, rr = path.resolve(), root.resolve()
-    if not rp.is_relative_to(rr):
-        raise ValueError(f"path escapes allowed root {rr}: {path}")
-    return rp
+def _fixed_out(root: Path, name: str) -> Path:
+    """Output path for a bare filename under a trusted root.
+
+    Callers pass literal filenames only; reject anything that could climb out
+    (absolute, '..' parts). No resolve(): joining a trusted constant with a
+    checked literal cannot escape the root.
+    """
+    p = Path(name)
+    if p.is_absolute() or ".." in p.parts:
+        raise ValueError(f"output name must be a bare filename: {name}")
+    return root / p
 
 
-OUT_ASSIGN_CMP = _safe_out(AUDIT / "assignment_comparison.csv", AUDIT)
-OUT_ASSIGN = _safe_out(AUDIT / "split_assignment.csv", AUDIT)
-OUT_LEAK = _safe_out(AUDIT / "post_split_leakage.csv", AUDIT)
+OUT_ASSIGN_CMP = _fixed_out(AUDIT, "assignment_comparison.csv")
+OUT_ASSIGN = _fixed_out(AUDIT, "split_assignment.csv")
+OUT_LEAK = _fixed_out(AUDIT, "post_split_leakage.csv")
 
 def main():
     ap = argparse.ArgumentParser()

@@ -16,11 +16,23 @@
    - Saigon is merged into the training dataset via native-resolution tiling ($640 \times 640$, stride 512) and group-based splitting (272 image groups).  
    - This spends Saigon as an independent out-of-distribution evaluation set. As accepted, the Bengaluru lake capture set (T9) serves as the primary true out-of-distribution benchmark.
 3. **D4 Combined Aerial Cap (35.0%):**  
-   - Combined aerial positive tiles in train (Hagenbeek 858 + Saigon 1,721 = 2,579) are capped at exactly 35.00% of the 7,368 total train images. 372 surplus Saigon train tiles were dropped (seed 42).
+   - Combined aerial positive tiles in train (Hagenbeek 858 + Saigon 1,598 = 2,456) are capped at 34.996% of the 7,018 pre-background train images (≤ 35.0% as required; after the 350 background frames are added the share is 33.33% of 7,368). 2,049 surplus Saigon train tiles were dropped (seed 42).  
+   - *(Corrected 2026-09-29: previously stated as "858 + 1,721 = 2,579 ... 372 tiles dropped" — see MERGE_REPORT §9 and STATE_REPORT §8 for the verified tile arithmetic.)*
 
 ---
 
 ## 1. Complete Current `DECISIONS_LOG.md`
+
+> **[2026-09-29 note]** The snapshot below is the 2026-09-22 version and predates the
+> CP4 review fixes. The authoritative file is `reports/DECISIONS_LOG.md`, which now
+> also contains **D2 (class mapping), D4 (tiling + aerial cap), D6 (AquaTrash OOD),
+> D8 (background budget), D9 (Hagenbeek empty-label quarantine)** and renames the
+> Saigon-weights entry to **T9_WEIGHTS** (T9 now refers only to the Bengaluru Capture
+> Set). The snapshot's T9 section also misquotes the Zenodo record as "Two models:
+> plastic litter and water hyacinth" — the record actually publishes **two model
+> variants (Model_resize, Model_tiles)** detecting the 3-class taxonomy
+> `ff_litter`/`hyacinth`/`ent_litter` (verified against Zenodo record 12800597 and the
+> dataset `classes.txt` on 2026-09-29).
 
 ```markdown
 # Decisions Log — RoBoat dataset & training pipeline
@@ -186,6 +198,13 @@ Pending entries are marked PENDING and filled at their checkpoint.
 
 ## 2. `AGENTS_LOG.md` Full Findings List
 
+> **[2026-09-29 note]** Snapshot of 2026-09-22. The live `reports/AGENTS_LOG.md`
+> supersedes it: the "247 bg" line below is historical (CP1-era figure, corrected to
+> 350 bg in CP2 — see the live file's annotation), and the "Known latent:
+> box_counts not decremented under an active aerial cap" line was RESOLVED on
+> 2026-09-22 (decrement implemented; the cap was active in the final build, dropping
+> 2,049 tiles).
+
 ```markdown
 # Agents Log — work done, by which agent, and what was fixed
 
@@ -296,7 +315,11 @@ IndexError guard (7); `--dry-run` now implies `--skip-clip` (8); dead
 
 ## 3. Regenerated `MERGE_REPORT.md`
 
-*(Full contents as committed to `reports/MERGE_REPORT.md`)*
+> **[2026-09-29 note]** Snapshot of the 2026-09-22 MERGE_REPORT. The live
+> `reports/MERGE_REPORT.md` supersedes it: the Saigon/Hagenbeek pos/empty tile splits
+> and the aerial-cap tile arithmetic in this snapshot (1,721 + 340, 2,579/7,368,
+> "372 tiles dropped") were corrected on 2026-09-29 — box counts are unchanged and
+> verified. See live MERGE_REPORT §1/§2/§6/§9.
 
 ```markdown
 # Merge Report — RoBoat detection dataset (data/processed)
@@ -453,7 +476,7 @@ No data blockers remain.
 | **FML** | $1920 \times 1080$ (all 5,299) | 3,136 / 373 / 364 / **3,873** *(2,786 pos + 350 bg)* | 12,121 / 2,266 / 2,070 / **16,457** | 16,457 / 0 | 16,457 / 0 / 0 | 10 session groups ($>600\text{s}$ gap), greedy largest-first (80.5% / 11.1% / 8.5%) |
 | **TUD-GV** | $1920 \times 1080$ (all 1,501) | 1,207 / 148 / 146 / **1,501** | 7,113 / 475 / 593 / **8,181** | 8,181 / 0 | 8,181 / 0 / 0 | 30 `expNN` sequence groups, greedy largest-first (80.4% / 9.9% / 9.7%) |
 | **Hagenbeek (Tiles)** | $4000 \times 3000$ to $5472 \times 3648$ (82 originals) | 964 / 70 / 127 / **1,161** *(858 pos + 106 emp train)* | 1,768 / 110 / 200 / **2,078** | 1,413 / 665 | 972 / 665 / 441 | 82 image groups (1/orig), greedy largest-first (80.5% / 9.8% / 9.8%); tiles inherit group |
-| **Saigon (Tiles)** | $4048 \times 3032$ to $5568 \times 4872$ (272 originals) | 2,061 / 309 / 523 / **2,893** *(1,721 pos + 340 emp train)* | 5,458 / 787 / 1,087 / **7,332** | 5,228 / 2,104 | 1,633 / 2,104 / 3,595 | 272 image groups (1/orig), greedy largest-first (80.1% / 9.9% / 9.9%); tiles inherit group |
+| **Saigon (Tiles)** | $4048 \times 3032$ to $5568 \times 4872$ (272 originals) | 2,061 / 309 / 523 / **2,893** *(1,598 pos + 463 emp train)* | 5,458 / 787 / 1,087 / **7,332** | 5,228 / 2,104 | 1,633 / 2,104 / 3,595 | 272 image groups (1/orig), greedy largest-first (80.1% / 9.9% / 9.9%); tiles inherit group |
 | **Combined** | — | **7,368 / 900 / 1,160 / 9,428** | **26,460 / 3,638 / 3,950 / 34,048** | **31,279 / 2,769** | **27,243 / 2,769 / 4,036** | Group-isolated across all sources (0% sequence/tile leakage) |
 | *AquaTrash (OOD Eval)* | $300 \times 168$ to $1920 \times 1080$ | 0 / 0 / 369 / **369** | 0 / 0 / 469 / **469** | 469 / 0 | 469 / 0 / 0 | Eval-only benchmark (D6) |
 
@@ -577,18 +600,69 @@ Verification: Saigon overlap gain = 3,394×1 + 70×2 + 455×3 = 3,394+140+1,365 
 ### Why Saigon loses boxes overall (−21.6%) while Hagenbeek gains (+46.9%)
 
 1. **Boundary drop rates** are similar (Hagenbeek 4.9%, Saigon 6.0%) — not the main driver.
-2. **Aerial cap is dominant.** Saigon contributes far more positive train tiles (2,093 pre-cap)
-   than Hagenbeek (1,034 pre-cap). After the 35% combined cap, 372 Saigon train tiles are
-   discarded (−6,359 train boxes). Hagenbeek's share is already below 35% → 0 drops.
+2. **Aerial cap is dominant.** Saigon contributes far more positive train tiles (3,647 pre-cap)
+   than Hagenbeek (858 pre-cap; pool 4,505). After the 35% combined cap, 2,049 Saigon train
+   tiles are discarded (−6,359 train boxes), leaving 2,456 positive aerial train tiles
+   (34.996% of the 7,018 pre-background train images). Hagenbeek's share is already below
+   35% → 0 drops.
 3. **Val/test are never capped.** Saigon val 787 and test 1,087 are exact pre-cap totals.
+
+*(Tile-level figures corrected 2026-09-29 via `scripts/reconcile_boxes.py`; the earlier
+"2,093 vs 1,034 pre-cap, 372 tiles dropped" narrative did not match the manifest. All
+box-level figures are unchanged and verified.)*
 
 ### Mid-session 8,392 figure (task-141 log)
 
 An intermediate build used an incorrect cap denominator (total train instead of non-aerial
-train), leaving the aerial share at 41.3%. After the fix, 372 tiles were dropped, reducing
-Saigon train boxes from the intermediate 6,229 to **5,458**, yielding the verified **7,332**
-(= 5,458 + 787 + 1,087). The 8,392 figure (= 6,229 + 1,289 + 874) is a stale intermediate
-and does not correspond to any valid build.
+train), leaving the aerial share at 41.3%. After the fix, surplus Saigon tiles were dropped,
+reducing Saigon train boxes from the intermediate 6,229 to **5,458**, yielding the verified
+**7,332** (= 5,458 + 787 + 1,087). The 8,392 figure (= 6,229 + 1,289 + 874) is a stale
+intermediate and does not correspond to any valid build. *(Tile-drop count corrected
+2026-09-29: 2,049 tiles, not 372 — see above.)*
+
+### Live stdout confirmation — re-run 2026-09-29
+
+> **[Round 2, 2026-09-29]** Three review gaps closed (see AGENTS_LOG 2026-09-29
+> round 2): (a) Zenodo checkpoint taxonomy **checkpoint-verified** — both
+> `Model_resize_weights.pt` and `Model_tiles_weights.pt` carry
+> `model.names = {0:'ff_litter', 1:'hyacinth', 2:'ent_litter'}`, `model.nc = 3`
+> (`scripts/verify_zenodo_weights.py`); (b) background count shown from the
+> manifest — 350 train rows with `tile_info == "background"` (all FML, all empty
+> label files), 7,368 = 7,018 post-cap + 350; (c) pool composition stated —
+> 4,505 = Saigon 3,647 + Hagenbeek 858 positive train tiles.
+
+`build_dataset.py --dry-run` on the current raw data reproduces the on-disk dataset exactly
+(7,332 is the live output of the current code, not a stale transcription):
+
+```
+$ .venv/Scripts/python.exe scripts/build_dataset.py --dry-run
+  "bg_used":     {"fml": 350, "tud_gv": 0, "budget": 701},
+  "box_counts": {
+    "fml":       {"val": 2266, "test": 2070, "train": 12121},
+    "tud_gv":    {"test": 593,  "val": 475,  "train": 7113},
+    "hagenbeek": {"train": 1768, "val": 110, "test": 200},
+    "saigon":    {"train": 5458, "val": 787, "test": 1087}
+  },
+  "tiles": {"pos": 3373, "empty": 681},
+  "aerial_share_post_cap": 0.35,
+  "cap_applied": true,
+  "tiles_dropped": 2049
+
+$ .venv/Scripts/python.exe scripts/verify_dataset.py --dry-run
+pass fml_boxes_reconcile (16457 vs 16457)
+pass tud_boxes_reconcile (8181 vs 8181)
+pass hagenbeek_boxes_reconcile (tile boxes 2078 >= orig 1415 (overlap doubling))
+pass saigon_orig_images (243 + 29 excluded == 272)
+pass saigon_boxes_reconcile (tile boxes 7332 ...)
+pass tiles_boxes_inside
+ALL PASS
+
+$ .venv/Scripts/python.exe scripts/reconcile_boxes.py     (independent geometry replay)
+hagenbeek: raw 1,415 − 70 boundary + 733 overlap = 2,078 == on-disk 2,078  TIE-OUT PASS
+saigon:    raw 9,352 − 560 boundary + 4,899 overlap = 13,691 pre-cap
+           − 6,359 cap (2,049 tiles) = 7,332 == on-disk 7,332          TIE-OUT PASS
+combined cap replay: pool 4,505, target int(0.35*4,562/0.65) = 2,456 == manifest 2,456
+```
 
 ### Live stdout confirmation — `data/processed/manifest.csv` (this session)
 
@@ -630,7 +704,7 @@ All        3950  26460  3638  34048
 
 - **Tiling parameters:** [Confirmed] Tile size 640×640, stride 512 (20% overlap). Cropped boundary boxes require ≥40% intersection area fraction (`MIN_AREA_FRAC = 0.40`) to be retained. Empty tiles capped at ≤15% of positive tiles (`MAX_EMPTY_TILE_FRAC = 0.15`).
 - **Combined aerial positive share cap:** [Confirmed] Combined aerial positive tiles in train (Hagenbeek + Saigon) capped at ≤35.0% of total train images (`MAX_AERIAL_SHARE = 0.35`). Surplus positive tiles dropped from dominant source (Saigon), seed 42.
-- **Evidence:** `scripts/build_dataset.py` lines 33–36 (constants) and lines 238–278 (cap implementation). Verified exact post-cap share: **35.00%** (2,579 / 7,368 tiles). [Confirmed from `build_stats.json` + manifest count]
+- **Evidence:** `scripts/build_dataset.py` lines 33–36 (constants) and lines 238–278 (cap implementation). Verified post-cap share: **34.996%** (2,456 / 7,018 pre-background train tiles); cap replay exact (target 2,456, 2,049 tiles dropped). [Confirmed 2026-09-29 from `build_stats.json` (`tiles_dropped: 2049`) + `scripts/reconcile_boxes.py` + manifest count] *(Corrected from "35.00% (2,579 / 7,368 tiles)".)*
 
 ### D6 — AquaTrash OOD evaluation set
 
@@ -642,7 +716,7 @@ All        3950  26460  3638  34048
 
 - **Evidence (local):** [Confirmed] Background empty frames included in train to provide negative supervision against false positives. Budget capped at ≤10% of training set (`MAX_BG_FRAC = 0.10`).
 - 350 background frames used (within the 701 max budget). Sourced strictly from verified-empty FML frames (TUD-GV contains 0 empty frames).
-- **Source:** `scripts/build_dataset.py` lines 280–290 (background negative section). Budget = `int(MAX_BG_FRAC * n_train)` = `int(0.10 × 7,368)` = 736 (frame-count budget) → halved to 368 per source, 350 fml taken, 0 tud_gv. [Confirmed from `build_stats.json`: `bg_used.fml = 350, budget = 701`]
+- **Source:** `scripts/build_dataset.py` lines 280–290 (background negative section). The budget is computed on the post-cap, pre-background train count: `int(MAX_BG_FRAC × 7,018)` = **701**; the first half (350) is filled from verified-empty FML train frames and the TUD-GV remainder is unfilled (0 empty frames available). 350 used ≤ 701 budget. [Confirmed from `build_stats.json`: `bg_used.fml = 350, budget = 701`] *(Corrected 2026-09-29: previously computed against 7,368 → "736", the wrong denominator — the 7,368 count already includes the 350 background frames themselves.)*
 
 ### D9 — Hagenbeek empty-label quarantine & CP3 exclusion
 

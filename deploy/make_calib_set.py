@@ -20,15 +20,20 @@ PROC = ROOT / "data" / "processed"
 CALIB = PROC / "calib"
 
 
-def _safe_out(path: Path, root: Path) -> Path:
-    """Resolve an output path and refuse traversal outside its root."""
-    rp, rr = path.resolve(), root.resolve()
-    if not rp.is_relative_to(rr):
-        raise ValueError(f"path escapes allowed root {rr}: {path}")
-    return rp
+def _fixed_out(root: Path, name: str) -> Path:
+    """Output path for a bare filename under a trusted root.
+
+    Callers pass literal filenames only; reject anything that could climb out
+    (absolute, '..' parts). No resolve(): joining a trusted constant with a
+    checked literal cannot escape the root.
+    """
+    p = Path(name)
+    if p.is_absolute() or ".." in p.parts:
+        raise ValueError(f"output name must be a bare filename: {name}")
+    return root / p
 
 
-OUT_CALIB_MANIFEST = _safe_out(CALIB / "calib_manifest.csv", CALIB)
+OUT_CALIB_MANIFEST = _fixed_out(CALIB, "calib_manifest.csv")
 
 def main():
     ap = argparse.ArgumentParser()

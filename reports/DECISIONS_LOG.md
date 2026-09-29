@@ -36,7 +36,7 @@ Pending entries are marked PENDING and filled at their checkpoint.
 ## D4 — Tiling configuration & aerial share cap
 
 - **Tiling parameters:** [Confirmed] Tile size $640 \times 640$, stride $512$ (20% tile overlap). Cropped boundary boxes require $\ge 40\%$ intersection area fraction (`MIN_AREA_FRAC = 0.40`) to be retained. Empty tiles capped at $\le 15\%$ of positive tiles (`MAX_EMPTY_TILE_FRAC = 0.15`).
-- **Combined aerial positive share cap:** [Confirmed] Combined aerial positive tiles in train (Hagenbeek + Saigon) capped at $\le 35.0\%$ of total train images (`MAX_AERIAL_SHARE = 0.35`). Surplus positive tiles dropped from dominant source (Saigon), seed 42. Exact post-cap share: **35.00%** (2,579 / 7,368 tiles).
+- **Combined aerial positive share cap:** [Confirmed] Combined aerial positive tiles in train (Hagenbeek + Saigon) capped at $\le 35.0\%$ of train (`MAX_AERIAL_SHARE = 0.35`), enforced on the pre-background train count. Surplus positive tiles dropped from dominant source (Saigon), seed 42. Post-cap share: **34.996%** (2,456 / 7,018 pre-background train tiles; 33.33% of the final 7,368 incl. background). *(Corrected 2026-09-29 from "35.00% (2,579 / 7,368)" — see MERGE_REPORT §9.)*
 
 ## D5 — Saigon River dataset — VERIFIED + PROFILED (Checkpoint 2)
 
@@ -92,10 +92,13 @@ Pending entries are marked PENDING and filled at their checkpoint.
 - **Model Zoo Hailo-8L network list includes both target models.** [Confirmed] `docs/public_models/HAILO8L/HAILO8L_object_detection.rst` lists `yolov8n` and `yolov11n`.
 - **Calibration / compression:** docs recommend in-domain calibration images, ≥1,024 for production; INT8-only export. Calibration set built: 1,024 images, hyacinth share 0.25, balanced fml 485 / tud_gv 193 / hagenbeek 346 (`data/processed/calib/`). [Confirmed]
 
-## T9_WEIGHTS — Saigon pre-labelling weights — VERIFIED
+## T9_WEIGHTS — Saigon pre-labelling weights — VERIFIED (checkpoint-level)
 
 - **Zenodo record 12800597 [Confirmed]:** "Yolov8 Model weights (Detection of floating plastic litter and water hyacinths)", Tianlong Jia, TU Delft, published 2024-07-23, **License CC-BY-4.0**, file `trained_weights.zip` (~11.3 MB, MD5 fba31bd...).
-- Published models detect the 3-class taxonomy: `ff_litter` (0), `hyacinth` (1), `ent_litter` (2), from the Saigon River study (Environmental Research: Water, 2025). Code: https://github.com/TianlongJia/deep_plastic_YoloV8
+- **CHECKPOINT-VERIFIED 3-class taxonomy [Confirmed 2026-09-29]:** both variants were downloaded and inspected — `scripts/verify_zenodo_weights.py` unpickles each `.pt` (stub-substituted, no legacy ultralytics modules needed) and prints the saved model attributes:
+  - `Model_resize_weights.pt`: `model.names = {0: 'ff_litter', 1: 'hyacinth', 2: 'ent_litter'}`, `model.nc = 3`
+  - `Model_tiles_weights.pt`: `model.names = {0: 'ff_litter', 1: 'hyacinth', 2: 'ent_litter'}`, `model.nc = 3`
+  The Zenodo prose "two models" refers to the two **variants** (Model_resize, Model_tiles), not two classes. This matches the dataset `classes.txt` (272 images / 9,352 boxes: ent_litter 4,299 / ff_litter 2,036 / hyacinth 3,017). From the Saigon River study (Environmental Research: Water, 2025). Code: https://github.com/TianlongJia/deep_plastic_YoloV8
 
 ## CP2/CP3 — Checkpoint decisions (2026-09-22)
 
@@ -103,7 +106,7 @@ Pending entries are marked PENDING and filled at their checkpoint.
   1. Post-tiling in-tile box stats reported in MERGE_REPORT §4b (detectability floor improves from median 4.9px / 67% <8px pre-tiling letterbox to median 39.8px / 0.3% <8px at 640 in-tile and median 59.7px / 0.0% <8px at 960 in-tile). [Confirmed]
   2. D7 RFS recomputed on the new train split (f_hyacinth = 0.1834) → chosen t = 2.0 yields r_hyacinth = 3.30, r_litter = 1.61. [Confirmed from rfs_table.csv]
   3. D10: Saigon assigned via its own group-based split (272 image groups, greedy fill 80.1/9.9/9.9) in split_assignment.csv; per-source yamls and split lists generated. [Confirmed from build output]
-  4. Aerial cap extended (D4): combined Hagenbeek+Saigon positive-tile share capped at 35.0% of train (2,579 / 7,368 tiles); surplus dropped from dominant contributor (Saigon), seed 42. [Confirmed: 35.00% exact]
+  4. Aerial cap extended (D4): combined Hagenbeek+Saigon positive-tile share capped at ≤35.0% of train (2,456 / 7,018 pre-background train tiles = 34.996%); surplus dropped from dominant contributor (Saigon), seed 42 — 2,049 tiles. [Confirmed 2026-09-29 by cap replay + manifest]
   5. Trade-off accepted: merging spends Saigon's value as an independent-river OOD check. Accepted because Bengaluru T9 is the real generalization test, not Saigon. Paper trail recorded.
 - **CP3 = the 10 empty-label Hagenbeek images stay EXCLUDED** (user criterion: only confidently object-free frames may serve as negatives; false-negative supervision is worse than losing 10 images; D8 budget unaffected at 350/701). No human review of `hagenbeek_empty_labels_contact_sheet.jpg` occurred.
 - **CP4 = held** until full state report and regenerated MERGE_REPORT presented.

@@ -87,7 +87,9 @@ IndexError guard (7); `--dry-run` now implies `--skip-clip` (8); dead
 - `add_px` hardcodes 1920×1080 for FML/TUD — [Confirmed correct] from the
   exploration scan (all 5,299 FML and 1,501 TUD images are exactly 1920×1080).
 - `_dropped_stems` private stats key: local-only (not serialized); accepted.
-- Known latent: `box_counts` not decremented under an active aerial cap;
+- Known latent: `box_counts` not decremented under an active aerial cap
+  **[RESOLVED 2026-09-22 — decrement implemented; the cap was active in the final
+  build, dropping 2,049 Saigon train tiles / 6,359 boxes]**;
   background manifest dims hardcoded 1920×1080 (true for both source datasets).
 
 ## 2026-09-22 — main (CP2 / CP3 execution)
@@ -101,3 +103,69 @@ IndexError guard (7); `--dry-run` now implies `--skip-clip` (8); dead
 - **main**: CP3 criterion applied: all 10 empty-label Hagenbeek images remain excluded (no human review of contact sheet occurred; false-negative avoidance prioritized).
 - **main**: Fixed `verify_dataset.py` (`box_by_src` definition, aerial tile bounds check for both Hagenbeek and Saigon, contact sheet generation). Re-verified with 16/16 checks **ALL PASS**.
 - **main**: `MERGE_REPORT.md` regenerated; `reports/STATE_REPORT.md` written for CP4 sign-off.
+
+## 2026-09-29 — main (CP4 re-verification round)
+
+- **main**: Re-ran `build_dataset.py --dry-run` on the repopulated raw data: reproduces
+  the on-disk dataset exactly (Saigon 5,458/787/1,087 = 7,332; Hagenbeek 1,768/110/200
+  = 2,078; budget 701) — confirms 7,332 is the live output of the current code, and
+  the task-141 "8,392" figure corresponds to no valid build.
+- **main**: Committed `scripts/reconcile_boxes.py` (the 2026-09-22 §9 table had been
+  produced by an uncommitted in-session script). Independent geometry replay ties out:
+  Hagenbeek 1,415 − 70 + 733 = 2,078; Saigon 9,352 − 560 + 4,899 = 13,691 pre-cap −
+  6,359 cap = 7,332; combined cap replay target 2,456 == manifest 2,456.
+- **main — discrepancies found in the 2026-09-22 reports, corrected**: tile-level
+  figures were wrong while all box figures were correct. Manifest ground truth:
+  Saigon train tiles 1,598 pos + 463 empty (not 1,721 + 340), val 276 + 33, test
+  465 + 58; Hagenbeek val 63 + 7, test 113 + 14; pre-cap positive train tiles 3,647
+  (Saigon) / 858 (Hagenbeek), pool 4,505, cap target 2,456, **2,049 tiles dropped
+  (not 372)**; post-cap share 34.996% of 7,018 pre-background train (33.33% of 7,368
+  incl. bg). Fixed in MERGE_REPORT §1/§2/§6/§9 and STATE_REPORT §3/§4/§8/§9.
+- **main**: `build_dataset.py` now serializes `tiles_dropped` in `build_stats.json`
+  (dry-run confirms 2,049); `verify_dataset.py` saigon_boxes_reconcile detail no
+  longer prints a misleading "0 tiles dropped" when the key is absent.
+- **main**: STATE_REPORT §1/§2 embedded snapshots (2026-09-22) annotated as superseded
+  by the live DECISIONS_LOG (D2/D4/D6/D8/D9 backfilled, T9_WEIGHTS rename) and live
+  AGENTS_LOG (350 bg, resolved latent). Zenodo record 12800597 re-checked: it
+  publishes two model **variants** (Model_resize, Model_tiles) detecting the 3-class
+  taxonomy ff_litter/hyacinth/ent_litter — the old "two models: plastic litter and
+  water hyacinth" phrasing conflated variants with classes.
+- **main**: D8 budget arithmetic corrected in STATE_REPORT §9: budget = int(0.10 ×
+  7,018 post-cap pre-background train) = 701 (not int(0.10 × 7,368) = 736).
+- **main**: `verify_dataset.py --dry-run` re-run: 16/16 checks **ALL PASS**.
+
+## 2026-09-29 — main (CP4 re-verification round 2 — review gaps closed)
+
+- **main — checkpoint taxonomy VERIFIED (was Derived):** downloaded Zenodo 12800597
+  `trained_weights.zip` (11,345,833 B) and inspected both checkpoints directly.
+  Modern ultralytics cannot unpickle the legacy `ultralytics.yolo` layout, so
+  `scripts/verify_zenodo_weights.py` unpickles with inert stub classes (no legacy
+  modules reachable; builtins whitelisted) and prints the real saved attributes:
+  both `Model_resize_weights.pt` and `Model_tiles_weights.pt` carry
+  `model.names = {0: 'ff_litter', 1: 'hyacinth', 2: 'ent_litter'}` and
+  `model.nc = 3`. T9_WEIGHTS upgraded from Derived to checkpoint-Verified in
+  DECISIONS_LOG; BENGALURU_CAPTURE.md's 3-class pre-labelling text confirmed correct.
+- **main — background count shown, not just the cap:** manifest query: train rows
+  with `tile_info == "background"` = **350** (all FML); all 350 corresponding
+  `merged2/labels/train/*.txt` files verified empty. Denominators: 7,368 final
+  train = 7,018 post-cap pre-background + 350 background. The exact one-third
+  aerial share (2,456/7,368) is a coincidence (2,456 × 3 = 7,368); the cap was
+  enforced on 7,018 at 34.996%. Recorded in MERGE_REPORT §6.
+- **main — pool composition stated explicitly:** the 4,505 combined aerial pool =
+  Saigon 3,647 + Hagenbeek 858 positive train tiles; the 569 kept empty aerial
+  train tiles are outside the pool but count in `n_train_before`. One-liner added
+  to MERGE_REPORT §9.
+- **main — output-path hardening (Mimosa gate round):** the Mimosa git gate blocks
+  commits while its Semgrep-derived path-traversal rule reports highs. Probe files
+  proved the rule fires on **every** form of file-write path — helper-returned,
+  module constant, inline literal join, and even a pure relative string
+  `open("data/processed/x.csv", "w")` — so no code style can clear it; the 12
+  findings are false positives on fixed output filenames (`manifest.csv`,
+  `verification_results.csv`, ...) written inside the repo. Refactored the five
+  pipeline scripts to a `_fixed_out(root, literal)` helper (bare-filename check,
+  rejects absolute/`..`; read-side `_rel_to_raw` keeps the resolve+containment
+  guard). Compile-checked; `verify_dataset.py --dry-run` ALL PASS; helper rejects
+  `../escape.csv`. No suppression path exists in-tool (`mimosa validate` covers
+  only readDoc/remote-runner contracts), and the gate mode (`MIMOSA_GIT_GATE_MODE`,
+  default `graded`) is user security configuration — **commit is left to the
+  user** (external terminal, or gate-mode decision); findings evidence above.
