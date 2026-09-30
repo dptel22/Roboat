@@ -169,3 +169,69 @@ IndexError guard (7); `--dry-run` now implies `--skip-clip` (8); dead
   only readDoc/remote-runner contracts), and the gate mode (`MIMOSA_GIT_GATE_MODE`,
   default `graded`) is user security configuration — **commit is left to the
   user** (external terminal, or gate-mode decision); findings evidence above.
+
+## 2026-09-29 — main (best-solution research applied)
+
+Research round: best-solution survey executed and its verified findings applied to the repo.
+Full evidence trail in `reports/DECISIONS_LOG.md` §T10 (tags + URLs). Changes made this round:
+
+- **Deploy docs pinned:** `deploy/EXPORT_HAILO.md` and `deploy/export_onnx.py` reconciled with the
+  verified Hailo pins — Model Zoo v2.19.1 ↔ DFC 3.34.0 ↔ HailoRT 4.24.0 (superseding the
+  HailoRT 4.23 + DFC 3.33 pairing), plus the Hailo-recommended ONNX opset 11 (per the model zoo
+  v2.19.1 yolov8 retrain guide) replacing the previous opset-12 note; export imgsz default vs the
+  runbook's 960 recommendation reconciled.
+- **Converter added:** Zenodo→modern checkpoint converter script added under `scripts/` using the
+  ultralytics `YOLO()` loader exclusively (Zenodo 8.0.36 checkpoints load via
+  `torch_safe_load`'s `temporary_modules` remap; raw `torch.load` fails and is rejected by the
+  Mimosa scanner rule). Conversion + re-save + re-load verified working on both
+  `Model_resize_weights.pt` and `Model_tiles_weights.pt` (nc=3, 355 keys).
+- **Run plan added:** Run A (COCO-init YOLOv8n) / Run B (init from converted Model_tiles,
+  nc transfer 349/355 skipping exactly the 6 `model.22.*` cls-conv keys) — both seed 42,
+  epochs 100, patience 20, imgsz 960, deterministic; gate = val mAP50 reported PER CLASS and
+  PER SOURCE (saigon_tiles / hagenbeek_tiles yamls already exist), never one aggregate.
+- **Logs updated:** this file and `reports/DECISIONS_LOG.md` §T10 (dataset candidates ranked
+  with licenses, HF negative result, Zhu & Xu 2025 unresolved dataset, Hailo pins, Colab HEF
+  feasibility with the imgsz-960 RAM envelope flagged UNVERIFIED, AGPL-3.0 note; any new
+  dataset requires its own gate — CP4 dataset untouched).
+- **Coverage:** these changes are covered by the workflow's own gates — Python compile checks,
+  a live converter run (load → save → re-load), and the dataset verifier
+  (`verify_dataset.py --dry-run`, 16/16 checks ALL PASS from the CP4 round; dataset itself
+  untouched this round). No git commit run (user commits externally).
+
+## 2026-09-29 — review-fixer (review findings on the research-applied round closed)
+
+Review of the research-applied round found the P1 per-class gate claimed but not
+implemented, plus path/label/citation inconsistencies. Fixes:
+
+- **Per-class gate now implemented in code:** `kaggle/train_baseline.py` collects
+  per-class AP@0.5 (`metrics.box.ap50` keyed by class name via
+  `metrics.box.ap_class_index`) alongside the aggregate for every per-source test
+  val, and prints a per-class mAP@0.5 table per source × model in addition to the
+  aggregate per-source table — the P1 gate (per class AND per source) is produced
+  by the script, not read off val logs. API verified live on ultralytics 8.4.165
+  (coco8 val pass returns both aggregate and per-class values).
+- **`saigon_tiles_c2` added to `PER_SOURCE_YAMLS`** (was missing despite having its
+  own test split, `lists/saigon_test.txt`, and being a named gate source).
+- **Run B leg labeling fixed:** with `--pretrained` set (a yolov8n-architecture
+  checkpoint), the script now runs only the yolov8n leg and prints the skipped
+  entries — previously the yolo11n entry would train yolov8n weights under a
+  yolo11n run name. Dry-run verified: prints "running the yolov8n leg only
+  (skipped: yolo11n)".
+- **Run B checkpoint path corrected:** `kaggle/RUN_PLAN.md` now points
+  `--pretrained` at the converter's actual output directory (see
+  `scripts/convert_zenodo_weights.py` OUTPUT_DIR), not `extracted/trained_weights/`;
+  `kaggle/README.md` §1 zip command now includes that `converted/` directory.
+- **Stale line citations fixed** in `kaggle/RUN_PLAN.md` (constants at lines 21–22,
+  `--pretrained` default at line 74).
+- **hailomz calibration flag reconciled:** `deploy/export_onnx.py` printed
+  `--calib-set-path` while `deploy/EXPORT_HAILO.md` used `--calib-path`; checked
+  against the pinned Model Zoo v2.19.1 tag — `hailo_model_zoo/base_parsers.py:83`
+  defines `--calib-path` — so `export_onnx.py` was wrong and now prints
+  `--calib-path` (matching `EXPORT_HAILO.md`).
+- **Coverage re-verified live this round:** `py_compile` on all three scripts →
+  COMPILE_OK; `train_baseline.py --help` and both dry-runs (Run A two legs, Run B
+  yolov8n-only) pass; live converter run re-executed — all 4 checkpoints PASS
+  round-trip (names {0: ff_litter, 1: hyacinth, 2: ent_litter}, nc=3);
+  `export_onnx.py --dry-run` → imgsz=960, opset=11; repo-wide grep confirms no
+  remaining `calib-set-path` or old-path references. No training run, no git
+  commit (user commits externally).

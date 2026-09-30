@@ -5,13 +5,20 @@ Two routes are documented. **Route A (ONNX + hailomz) is primary** per project
 decision; Route B is Ultralytics' integrated export.
 
 Verified facts (full citations in `reports/DECISIONS_LOG.md`):
-- DFC **3.x** is the correct line for Hailo-8/8L (Model Zoo v2.x + DFC 3.x;
-  Ultralytics docs validate Hailo-8L with HailoRT 4.23 + DFC 3.33).
+- **Pinned stack (verified 2026-09-29): Hailo Model Zoo v2.19.1 (tag, 2026-09-18)
+  ↔ DFC 3.34.0 ↔ HailoRT 4.24.0** — the current v2.x stack for Hailo-8/8L.
+  There is no `model-zoo-v2.x` branch anymore; the v2.x line lives as **tags**.
+  The Ultralytics-validated pairing (HailoRT 4.23 + DFC 3.33) still works but is
+  **superseded** — usable as a known-good fallback.
+- Master branch is Hailo-10/15 only. From the Model Zoo master `README.rst`
+  (verbatim): "The Hailo-8 and Hailo-8L devices are supported on the Hailo Model
+  Zoo v2.x branch, in combination with the Hailo Dataflow Compiler v3.x branch.
+  The master branch is intended for Hailo-10 and Hailo-15 devices only."
+- ONNX **opset 11** is what Hailo itself uses: the Model Zoo v2.19.1 yolov8
+  retrain guide (`hailo_model_zoo` v2.19.1, `training/yolov8/README.rst` line 94)
+  runs `yolo export ... format=onnx opset=11`.
 - Hailo Model Zoo HAILO8L object-detection list includes **yolov8n and
   yolov11n** — both our baseline models are compilable.
-- HEF compilation is **Linux x86_64 only** (WSL2 Ubuntu or Hailo Docker on your
-  machine, or a Kaggle/Linux box). The Pi 5 only runs the compiled HEF via
-  HailoRT.
 - DFC wheels come from the **Hailo Developer Zone** (free registration).
 
 ## Route A (primary): ONNX → hailomz
@@ -20,7 +27,9 @@ Verified facts (full citations in `reports/DECISIONS_LOG.md`):
    ```bash
    python deploy/export_onnx.py --weights best.pt --imgsz 960
    ```
-   (static shapes, opset 12, simplified — what the DFC parser expects).
+   (static shapes, opset 11, simplified — what the DFC parser expects; opset 11
+   follows Hailo's own yolov8 retrain guide, `training/yolov8/README.rst` line 94
+   in `hailo_model_zoo` v2.19.1).
 
 2. Build the calibration set (from the training machine, before zipping):
    ```bash
@@ -48,14 +57,35 @@ Verified facts (full citations in `reports/DECISIONS_LOG.md`):
 
 5. Result: `best.hef` + `hailo_model_zoo` metadata → copy to the Pi 5.
 
+## Calibration
+
+Ultralytics' `export(format="hailo")` defaults calibration to **COCO128** for
+detection — wrong data for our model. Always override with `data=` pointing at a
+dataset yaml or a calibration image directory. Use our existing calibration set
+at `data/processed/calib/` (1,024 images, hyacinth share 0.25). Hailo recommends
+**≥ 1,024 calibration images**; we meet that exactly.
+
+## Where to compile
+
+DFC is **linux_x86_64-only** (Windows/macOS cannot run it natively). Beyond
+WSL2/Docker on your own machine, **free Google Colab works**: the DFC ships as a
+`linux_x86_64` wheel that is pip-installed in a plain venv — no Docker needed.
+Community end-to-end guides:
+https://community.hailo.ai/t/guide-to-using-the-dfc-to-convert-a-modified-yolov11-on-google-colab/7131
+(DFC 3.29.0 era) and
+https://community.hailo.ai/t/model-zoo-installation-in-google-colab/11928
+(DFC 3.30.0). The wheel download needs the (free) Hailo Developer Zone login.
+**Unverified:** whether our imgsz-960 yolov8n fits inside Colab's ~12.7 GB free-tier
+RAM envelope — assume it may not, and have a local Linux/WSL2 fallback.
+
 ## Route B (alternative): Ultralytics native export
 
 Current Ultralytics supports `model.export(format="hailo", name="hailo8l",
-imgsz=960, data=dataset.yaml)` — validated on Hailo-8L (DFC 3.33/HailoRT 4.23).
-It still requires DFC on a Linux x86_64 host (internally: .pt → ONNX → parse →
-INT8 calibration → HEF, then deletes the intermediate ONNX). Use Route A when
-you want explicit control over calibration images and quantization flags; use
-Route B for convenience.
+imgsz=960, data=dataset.yaml)` — validated on Hailo-8L (DFC 3.33/HailoRT 4.23,
+now superseded by the pinned stack above). It still requires DFC on a Linux
+x86_64 host (internally: .pt → ONNX → parse → INT8 calibration → HEF, then
+deletes the intermediate ONNX). Use Route A when you want explicit control over
+calibration images and quantization flags; use Route B for convenience.
 
 ## Validation plan (do this after every export step)
 

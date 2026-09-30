@@ -8,10 +8,13 @@ zip resolves them to real file copies — just zip normally:
 ```powershell
 # from repo root, EXCLUDING intermediate/audit stuff Kaggle doesn't need
 cd data\processed
-tar -a -c -f roboat-processed.zip merged2 lists yamls ood_aquatrash
+tar -a -c -f roboat-processed.zip merged2 lists yamls ood_aquatrash zenodo_12800597/converted
 ```
 
 - Size ≈ 3.7k unique FML images + 1.2k TUD-GV + 1.2k Hagenbeek tiles (JPEG).
+- `zenodo_12800597/converted` carries the modern-format Zenodo checkpoints
+  produced by `scripts/convert_zenodo_weights.py` (needed for Run B's
+  `--pretrained`, see `kaggle/RUN_PLAN.md`).
 - Go to https://www.kaggle.com/datasets → **New Dataset**, upload
   `roboat-processed.zip`, name it `roboat-processed`, make it **private**
   (contains licensed research data: TUD-GV (Zenodo), FML v2, Hagenbeek).
@@ -33,8 +36,9 @@ python train_baseline.py --data-root /kaggle/input/roboat-processed
 - Models: `yolov8n`, `yolo11n` — DEFAULT hyperparameters only (epochs=100,
   patience=20), `imgsz=960` (from the D11 box-size audit), seed 42.
 - After each model it validates on every per-source test yaml
-  (`fml_c2`, `tud_gv_c2`, `hagenbeek_tiles_c2`, `combined_c2`, `ood_aquatrash`)
-  and prints a per-source mAP@0.5 table.
+  (`saigon_tiles_c2`, `hagenbeek_tiles_c2`, `fml_c2`, `tud_gv_c2`,
+  `combined_c2`, `ood_aquatrash`) and prints per-class AND per-source
+  mAP@0.5 tables.
 - Outputs in `roboat/baseline_<model>/` → download `best.pt`.
 
 ## 4. Optional augmented run

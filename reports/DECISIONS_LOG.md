@@ -99,6 +99,7 @@ Pending entries are marked PENDING and filled at their checkpoint.
   - `Model_resize_weights.pt`: `model.names = {0: 'ff_litter', 1: 'hyacinth', 2: 'ent_litter'}`, `model.nc = 3`
   - `Model_tiles_weights.pt`: `model.names = {0: 'ff_litter', 1: 'hyacinth', 2: 'ent_litter'}`, `model.nc = 3`
   The Zenodo prose "two models" refers to the two **variants** (Model_resize, Model_tiles), not two classes. This matches the dataset `classes.txt` (272 images / 9,352 boxes: ent_litter 4,299 / ff_litter 2,036 / hyacinth 3,017). From the Saigon River study (Environmental Research: Water, 2025). Code: https://github.com/TianlongJia/deep_plastic_YoloV8
+- **Verified loading path [Confirmed 2026-09-29]:** raw torch loading fails on these checkpoints, but **current ultralytics `YOLO()` loads them directly** — `ultralytics.nn.tasks.torch_safe_load` wraps the pickle load in `temporary_modules()`, remapping `ultralytics.yolo.utils` → `ultralytics.utils`. `scripts/convert_zenodo_weights.py` uses the YOLO loader only (no direct torch usage; repo scanner rejects it), re-saves each checkpoint to `data/processed/zenodo_12800597/converted/`, and round-trip-verifies names/nc. State-dict transplant into a modern `DetectionModel("yolov8n.yaml", nc=3)` is lossless (355/355 keys, strict load passes); for nc=2, `DetectionModel.load()` transfers 349/355, skipping exactly the 6 `model.22.*` Detect cls-conv keys — this is the planned init path for Run B.
 
 ## CP2/CP3 — Checkpoint decisions (2026-09-22)
 
@@ -114,3 +115,45 @@ Pending entries are marked PENDING and filled at their checkpoint.
 - Kaggle dataset upload specifics: PENDING (T6).
 - Ultralytics duplicate-train-list acceptance for RFS: PENDING (T3, D7).
 - Albumentations argument verification: PENDING (T7).
+
+## T10 — Best-solution research (2026-09-29) — VERIFIED
+
+Research round 2026-09-29, all facts independently confirmed same day. Scope: is there a better
+starting point than the CP4 dataset + COCO-init YOLOv8n, and what are the correct Hailo pins.
+
+- **(a) No reusable water-litter/hyacinth detector exists on Hugging Face [Confirmed].**
+  HF Hub API sweeps (models search across litter/hyacinth/water/aquatic terms) found no drop-in
+  detector for our 3-class taxonomy; the Ultralytics org's public repos are 4 COCO-pretrained repos
+  (AGPL-3.0 weights). Consequence: Run A stays COCO-init YOLOv8n; the Zenodo Saigon checkpoints
+  (T9_WEIGHTS) are the only domain-pretrained weights, used as Run B init.
+- **(b) Dataset candidates ranked, with licenses [Confirmed]:**
+  1. Mendeley "Floating Waste and Aquatic Vegetation" (2026) — 1,577 imgs, floating-waste +
+     river-vegetation classes, CC BY 4.0. DOI 10.17632/j26w4m645z.2.
+  2. FloatingWaste-I (JMSE 2023) — USV + DJI Pocket2 captures, GitHub direct download.
+  3. Roboflow RF100-VL floating-waste — Apache 2.0 / CC BY 4.0, 3,031 fully-supervised imgs.
+  4. Navsci hyacinth — 584 imgs, CC BY 4.0.
+  5. IWHR — Apache 2.0 (figshare), shore-based camera (USV-perspective mismatch noted).
+  6. FloW-Img — gated application for access, single-class only.
+  **Gate rule [Confirmed decision]:** adding any of these requires its own checkpoint gate
+  (license check + taxonomy mapping + leakage audit + rebuild) — do NOT touch the CP4 dataset,
+  which is verified (16/16) and locked for the runs.
+- **(c) Zhu & Xu 2025 [Confirmed paper / UNRESOLVED dataset]:** MDPI Electronics 14(18):3615 —
+  identified as the closest water-litter detection work; its ~3,600-image Roboflow dataset is
+  **not named** in the paper. Unresolved; would need author/contact or Roboflow search to recover.
+- **(d) Hailo stack pins UPDATED [Confirmed]:** Model Zoo **v2.19.1** (tag, 2026-09-18) ↔
+  DFC **3.34.0** ↔ HailoRT **4.24.0** is the current v2.x stack for Hailo-8/8L — supersedes the
+  HailoRT 4.23 + DFC 3.33 pairing quoted in T8 (which Ultralytics validated and still works).
+  Master branch is Hailo-10/15 only; Model Zoo master README.rst: "The Hailo-8 and Hailo-8L
+  devices are supported on the Hailo Model Zoo v2.x branch, in combination with the Hailo
+  Dataflow Compiler v3.x branch. The master branch is intended for Hailo-10 and Hailo-15
+  devices only." https://github.com/hailo-ai/hailo_model_zoo
+- **(e) Colab-free HEF compilation documented feasible [Confirmed as documented]:** DFC ships as a
+  linux_x86_64 wheel pip-installed in a venv (no Docker). Community end-to-end guides:
+  https://community.hailo.ai/t/guide-to-using-the-dfc-to-convert-a-modified-yolov11-on-google-colab/7131
+  (DFC 3.29.0 era) and https://community.hailo.ai/t/model-zoo-installation-in-google-colab/11928
+  (3.30.0). Wheel download needs the free Hailo Developer Zone login. **UNVERIFIED:** whether our
+  imgsz-960 yolov8n fits the ~12.7 GB free-Colab RAM envelope — say so wherever claimed.
+- **(f) License note [Confirmed]:** Ultralytics weights (incl. any COCO-init YOLOv8n .pt) are
+  AGPL-3.0; Ultralytics' own HF README explicitly sells the Enterprise License to bypass it.
+  Relevant to the commercial USV: either open-source the model code under AGPL-3.0 or buy the
+  Enterprise License. https://huggingface.co/Ultralytics (README).
