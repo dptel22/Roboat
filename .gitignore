@@ -32,3 +32,17 @@ Thumbs.db
 .idea/
 .mimosa/
 .zcode/
+
+# Accidental local artifacts (downloads / Windows redirect typos) - keep out of
+# a bulk `git add -A`; not referenced by any reviewed code
+/%TEMP%fig_iwhr.json
+/%TEMP%ul_exporter.py
+/nul
+/ds.html
+/paw.html
+/paw2.html
+/flow_page.html
+/usvinland.html
+/arxiv_flow.xml
+/flow_iccv.pdf
+/.factcheck_tmp/

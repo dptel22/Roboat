@@ -1,0 +1,8 @@
+[project]
+name = "roboat"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "ultralytics>=8.4.165",  # YOLO loader/trainer - scripts/smoke_train.py, kaggle/train_baseline.py
+    "pyyaml>=6.0.3",         # scripts/build_kaggle_bundle.py, kaggle/train_baseline.py
+]

@@ -37,6 +37,12 @@ python train_baseline.py --data-root /kaggle/input/roboat-processed \
   the path above, **not** `extracted/trained_weights/`. When building the
   Kaggle dataset zip, include that `converted/` directory alongside
   `merged2 lists yamls ood_aquatrash` (see `kaggle/README.md` §1).
+  The ready-made zip from `scripts/build_kaggle_bundle.py`
+  (`data/processed/kaggle_bundle/roboat-processed.zip`) keeps exactly this
+  layout — `merged2 lists yamls` + `zenodo_12800597/converted` — but omits
+  `ood_aquatrash` (that OOD image tree is not shipped); the script's
+  per-source val loop skips the missing `ood_aquatrash` entry, so the Run B
+  command above works unchanged on the bundle mount.
 - Ultralytics transfers what fits: for nc=2 that is 349/355 state-dict keys,
   skipping exactly the 6 `model.22.*` Detect cls-conv keys (verified). No
   manual surgery needed — pass the checkpoint to `--pretrained` and let

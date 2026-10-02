@@ -12,6 +12,11 @@ tar -a -c -f roboat-processed.zip merged2 lists yamls ood_aquatrash zenodo_12800
 ```
 
 - Size ≈ 3.7k unique FML images + 1.2k TUD-GV + 1.2k Hagenbeek tiles (JPEG).
+- Simpler alternative: run `scripts/build_kaggle_bundle.py` — it produces
+  `data/processed/kaggle_bundle/roboat-processed.zip` with the same top-level
+  layout (`merged2 lists yamls` + `zenodo_12800597/converted`), minus
+  `ood_aquatrash` (that OOD image tree is not shipped; `train_baseline.py`
+  skips the missing per-source yaml, so the report still prints).
 - `zenodo_12800597/converted` carries the modern-format Zenodo checkpoints
   produced by `scripts/convert_zenodo_weights.py` (needed for Run B's
   `--pretrained`, see `kaggle/RUN_PLAN.md`).
@@ -38,7 +43,8 @@ python train_baseline.py --data-root /kaggle/input/roboat-processed
 - After each model it validates on every per-source test yaml
   (`saigon_tiles_c2`, `hagenbeek_tiles_c2`, `fml_c2`, `tud_gv_c2`,
   `combined_c2`, `ood_aquatrash`) and prints per-class AND per-source
-  mAP@0.5 tables.
+  mAP@0.5 tables. A source whose yaml is missing or fails to validate is
+  skipped with a printed note (never crashes the run).
 - Outputs in `roboat/baseline_<model>/` → download `best.pt`.
 
 ## 4. Optional augmented run

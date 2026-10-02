@@ -112,16 +112,36 @@ def main():
                     project="roboat", name=f"baseline_{model_name}")
         best = model.trainer.best
         row = {}
+        skipped = []
         for ys in PER_SOURCE_YAMLS:
-            m = YOLO(best)
-            metrics = m.val(data=str(yamls / f"{ys}.yaml"), imgsz=IMGSZ, split="test")
+            yf = yamls / f"{ys}.yaml"
+            if not yf.exists():
+                # e.g. ood_aquatrash is not in the Kaggle bundle (its image
+                # tree is not shipped) - skip it, never lose the whole report
+                skipped.append(ys)
+                print(f"note: skipping per-source val on {ys}: {yf} not found")
+                continue
+            try:
+                m = YOLO(best)
+                metrics = m.val(data=str(yf), imgsz=IMGSZ, split="test")
+            except Exception as exc:  # one bad source must not lose the report
+                skipped.append(ys)
+                print(f"note: per-source val on {ys} failed ({exc}); "
+                      f"continuing with the remaining sources")
+                continue
             row[ys] = map50_row(metrics)
+        if skipped:
+            print(f"note: {len(skipped)} per-source val entries skipped: "
+                  f"{', '.join(skipped)}")
         results[model_name] = row
     if results and not args.dry_run:
+        # only print sources that actually produced metrics (skipped ones
+        # would KeyError the table)
+        sources = [y for y in PER_SOURCE_YAMLS if all(y in row for row in results.values())]
         print("\n===== per-source test mAP@0.5 (aggregate) =====")
-        print(f"{'model':<12}" + "".join(f"{y:<20}" for y in PER_SOURCE_YAMLS))
+        print(f"{'model':<12}" + "".join(f"{y:<20}" for y in sources))
         for mname, row in results.items():
-            print(f"{mname:<12}" + "".join(f"{row[y]['all']:<20.4f}" for y in PER_SOURCE_YAMLS))
+            print(f"{mname:<12}" + "".join(f"{row[y]['all']:<20.4f}" for y in sources))
         print("\n===== per-class mAP@0.5 per source (P1 gate: per class AND per source) =====")
         for mname, row in results.items():
             for ys, vals in row.items():
