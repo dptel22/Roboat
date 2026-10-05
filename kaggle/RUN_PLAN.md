@@ -72,16 +72,18 @@ Set (T9) is the real test — score it BEFORE any fine-tune on it.
 
 ## Planned ablations (post-gate, do not fold into Run A/B)
 
-Planned, not part of the A/B gate — run AFTER the gate, one change at a time,
-everything else locked:
-
-- `scale 0.5 → 0.2`: the default `scale=0.5` random-zoom can push tiled boxes
-  back under the D11 detectability floor (median 39.8 px @640 shrinks to
-  ~20 px at the 0.5 zoom-out extreme), so the baseline may be training on
-  boxes too small to learn; a milder zoom keeps them above it.
-- `flipud 0 → 0.5`: aerial imagery has no preferred up-direction, so vertical
-  flips double the effective augmentation space for free — standard
-  small-object detection practice (cf. SAHI).
+- **A3 "scale fix"**: `scale 0.5 → 0.2` — the default zoom-out can push tiled boxes
+  back under the D11 detectability floor (median 39.8 px @640 in-tile; a 0.5 zoom-out
+  halves box size).
+- **A4 "aerial flips"**: `flipud 0 → 0.5` — aerial imagery has no preferred
+  up-direction (small-object detection practice, cf. SAHI).
+- **A2 "weather-light"** and later packages: see `docs/WEATHER_AUGMENTATION.md` —
+  USV cameras face sun glare, rain, fog, spray and turbidity that our fair-weather
+  training data does not contain; Albumentations 2.x maps each condition to a
+  transform (`RandomSunFlare`, `RandomRain`, `RandomFog`, `RandomShadow`, `Spatter`),
+  wired via the `Albumentations(transforms=[...])` hook that ultralytics 8.4.165
+  natively supports. Seasonal/night conditions are NOT augmented — the Bengaluru
+  Capture Set (T9) captures them for real.
 
 ## Wall-clock budget & resume
 
