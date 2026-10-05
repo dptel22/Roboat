@@ -14,9 +14,9 @@ tar -a -c -f roboat-processed.zip merged2 lists yamls ood_aquatrash zenodo_12800
 - Size ≈ 3.7k unique FML images + 1.2k TUD-GV + 1.2k Hagenbeek tiles (JPEG).
 - Simpler alternative: run `scripts/build_kaggle_bundle.py` — it produces
   `data/processed/kaggle_bundle/roboat-processed.zip` with the same top-level
-  layout (`merged2 lists yamls` + `zenodo_12800597/converted`), minus
-  `ood_aquatrash` (that OOD image tree is not shipped; `train_baseline.py`
-  skips the missing per-source yaml, so the report still prints).
+  layout (`merged2 lists yamls ood_aquatrash` + `zenodo_12800597/converted`),
+  including the `ood_aquatrash` OOD tree (369 eval-only images) so the D6
+  benchmark is evaluable on Kaggle.
 - `zenodo_12800597/converted` carries the modern-format Zenodo checkpoints
   produced by `scripts/convert_zenodo_weights.py` (needed for Run B's
   `--pretrained`, see `kaggle/RUN_PLAN.md`).

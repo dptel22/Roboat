@@ -10,6 +10,9 @@ Run on Kaggle with the dataset uploaded per kaggle/README.md:
 Run B additionally passes --pretrained <converted Model_tiles_weights.pt>
 (see kaggle/RUN_PLAN.md). The converted checkpoint is a yolov8n architecture,
 so Run B trains the yolov8n leg only (the script skips the other MODELS entries).
+Pass --resume to continue an interrupted run from its last.pt
+(roboat/baseline_<model>/weights/last.pt) instead of starting fresh - 100
+epochs at imgsz 960 outlasts a single free session.
 """
 import argparse
 from pathlib import Path
@@ -82,6 +85,13 @@ def main():
                          "and ultralytics transfers the compatible layers "
                          "automatically (349/355 for nc=2).")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--resume", action="store_true",
+                    help="If the run's last.pt exists "
+                         "(roboat/baseline_<model>/weights/last.pt), resume from "
+                         "it instead of starting fresh. deterministic=True + "
+                         "resume restores the RNG state; Kaggle's /kaggle/working "
+                         "persists between Save-Version runs, so this is the "
+                         "cross-session continuation path on Kaggle.")
     args = ap.parse_args()
     from ultralytics import YOLO
 
@@ -106,18 +116,27 @@ def main():
             print(f"[dry-run] would train {model_name} (init={weights}) "
                   f"on {train_yaml}")
             continue
-        model = YOLO(weights)
-        model.train(data=str(train_yaml), epochs=EPOCHS, patience=PATIENCE,
-                    imgsz=IMGSZ, seed=SEED, deterministic=True,
-                    project="roboat", name=f"baseline_{model_name}")
+        last_pt = Path("roboat") / f"baseline_{model_name}" / "weights" / "last.pt"
+        if args.resume and last_pt.exists():
+            # mirror of the notebook resume logic: YOLO(last.pt) + resume=True
+            # (deterministic=True restores the RNG state); YOLO loader only,
+            # never raw torch.load
+            print(f"resuming {model_name} from {last_pt}")
+            model = YOLO(str(last_pt))
+            model.train(resume=True)
+        else:
+            model = YOLO(weights)
+            model.train(data=str(train_yaml), epochs=EPOCHS, patience=PATIENCE,
+                        imgsz=IMGSZ, seed=SEED, deterministic=True,
+                        project="roboat", name=f"baseline_{model_name}")
         best = model.trainer.best
         row = {}
         skipped = []
         for ys in PER_SOURCE_YAMLS:
             yf = yamls / f"{ys}.yaml"
             if not yf.exists():
-                # e.g. ood_aquatrash is not in the Kaggle bundle (its image
-                # tree is not shipped) - skip it, never lose the whole report
+                # yamls ship in the bundle (incl. ood_aquatrash) - a missing one
+                # is still skipped gracefully, never losing the whole report
                 skipped.append(ys)
                 print(f"note: skipping per-source val on {ys}: {yf} not found")
                 continue

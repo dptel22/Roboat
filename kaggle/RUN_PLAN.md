@@ -7,7 +7,7 @@ only fixes the configuration.
 ## Common settings (locked, do not tune)
 
 seed 42, epochs 100, patience 20, imgsz 960, deterministic=True
-(`kaggle/train_baseline.py:22` for `EPOCHS, PATIENCE, SEED`, line 21 for
+(`kaggle/train_baseline.py:25` for `EPOCHS, PATIENCE, SEED`, line 24 for
 `IMGSZ`, and the `model.train(...)` call). Primary train yaml is the 2-class
 `combined_c2.yaml`; all val/test yamls are the 2-class variants
 (`*_c2.yaml`).
@@ -39,10 +39,9 @@ python train_baseline.py --data-root /kaggle/input/roboat-processed \
   `merged2 lists yamls ood_aquatrash` (see `kaggle/README.md` §1).
   The ready-made zip from `scripts/build_kaggle_bundle.py`
   (`data/processed/kaggle_bundle/roboat-processed.zip`) keeps exactly this
-  layout — `merged2 lists yamls` + `zenodo_12800597/converted` — but omits
-  `ood_aquatrash` (that OOD image tree is not shipped); the script's
-  per-source val loop skips the missing `ood_aquatrash` entry, so the Run B
-  command above works unchanged on the bundle mount.
+  layout — `merged2 lists yamls ood_aquatrash` + `zenodo_12800597/converted` —
+  including the `ood_aquatrash` OOD tree (369 images + 369 labels, eval-only)
+  so the D6 benchmark is evaluable on Kaggle/Colab.
 - Ultralytics transfers what fits: for nc=2 that is 349/355 state-dict keys,
   skipping exactly the 6 `model.22.*` Detect cls-conv keys (verified). No
   manual surgery needed — pass the checkpoint to `--pretrained` and let
@@ -54,23 +53,62 @@ python train_baseline.py --data-root /kaggle/input/roboat-processed \
 
 ## P1 gate (written requirement)
 
-Report val mAP50 **per class** AND **per source** (the `saigon_tiles_c2.yaml`
-and `hagenbeek_tiles_c2.yaml` yamls already exist under
-`data/processed/yamls/`; `saigon_tiles_c2` is in the script's
-`PER_SOURCE_YAMLS`), not one aggregate. The script prints both tables itself:
-an aggregate per-source table plus a per-class mAP@0.5 line for every
-source × model. The gate passes only when both tables have been produced for
-both runs.
+Report **test-split mAP50 per class AND per source** (`saigon_tiles_c2`,
+`hagenbeek_tiles_c2`, `fml_c2`, `tud_gv_c2`, `combined_c2`, `ood_aquatrash`;
+all six per-source yamls exist under `data/processed/yamls/` and are in the
+script's `PER_SOURCE_YAMLS`), not one aggregate. The gate is evaluated on
+`split="test"` — unified with `training/colab_train.ipynb` so the numbers are
+comparable — because the per-source VAL sets are too small for stable
+per-class numbers (Hagenbeek hyacinth has just 64 val instances); val remains
+the early-stopping split only. The script prints both tables itself: an
+aggregate per-source table plus a per-class mAP@0.5 line for
+every source × model. The gate passes only when both tables have been produced
+for both runs.
 
 ## P2 note (interpretation caveat)
 
 The val split is same-site and will flatter the model. The Bengaluru Capture
 Set (T9) is the real test — score it BEFORE any fine-tune on it.
 
+## Planned ablations (post-gate, do not fold into Run A/B)
+
+Planned, not part of the A/B gate — run AFTER the gate, one change at a time,
+everything else locked:
+
+- `scale 0.5 → 0.2`: the default `scale=0.5` random-zoom can push tiled boxes
+  back under the D11 detectability floor (median 39.8 px @640 shrinks to
+  ~20 px at the 0.5 zoom-out extreme), so the baseline may be training on
+  boxes too small to learn; a milder zoom keeps them above it.
+- `flipud 0 → 0.5`: aerial imagery has no preferred up-direction, so vertical
+  flips double the effective augmentation space for free — standard
+  small-object detection practice (cf. SAHI).
+
+## Wall-clock budget & resume
+
+One run trains the RFS-expanded 10,070-image list at imgsz 960 on a T4 ≈
+15–20 min/epoch → 100 epochs ≈ **25–35 h per run**. That outlasts a single
+free Colab session (~12 h) and a single Kaggle GPU session (~9–12 h): plan
+**~2–3 free sessions per run with resume**, or use Kaggle's ~30 GPU-h/week.
+
+Resume, don't restart — `deterministic=True` + `resume=True` restores the RNG
+state, so a resumed run continues the same augmentation/schedule sequence as
+an uninterrupted one:
+
+- **Colab** (`training/colab_train.ipynb`): runs write to Drive
+  (`project=/content/drive/MyDrive/roboat_runs`), so `last.pt` survives the
+  session. In a fresh session re-run the setup cells (1–2c), then the §3/§4
+  training cells auto-detect `last.pt` and call `model.train(resume=True)`
+  (there is also a dedicated "Resume an interrupted run" cell after §4).
+- **Kaggle**: `/kaggle/working` persists between Save-Version runs —
+  re-attach the previous session's output as an input and call
+  `model.train(resume=True)` on its `last.pt`, or run
+  `python train_baseline.py --resume`.
+
 ## Colab caveat
 
-Whether 100 epochs at imgsz 960 fits a free Colab session (RAM and ~12 h
-session limit) is **unverified** — check before P1 launches. (Compilation of
+At the estimate above (25–35 h per run), 100 epochs at imgsz 960 does **not**
+fit one free Colab session (~12 h) — use the resume path in
+"Wall-clock budget & resume" and plan ~2–3 sessions per run. (Compilation of
 HEFs on free Colab is separately known to work via the DFC linux_x86_64 wheel;
 that does not answer the training-fit question.)
 
