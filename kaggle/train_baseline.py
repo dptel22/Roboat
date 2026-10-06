@@ -24,7 +24,8 @@ MODELS = ["yolov8n", "yolo11n"]
 IMGSZ = 960  # D11 recommendation - do not tune in the baseline
 EPOCHS, PATIENCE, SEED = 100, 20, 42
 PER_SOURCE_YAMLS = ["saigon_tiles_c2", "hagenbeek_tiles_c2", "fml_c2",
-                    "tud_gv_c2", "combined_c2", "ood_aquatrash"]
+                    "tud_gv_c2", "mendeley_c2", "navsci_invasive_c2",
+                    "navsci_whd_c2", "combined_c2", "ood_aquatrash"]
 
 
 def rebase(data_root: Path, workdir: Path):
@@ -88,10 +89,13 @@ def main():
     ap.add_argument("--resume", action="store_true",
                     help="If the run's last.pt exists "
                          "(roboat/baseline_<model>/weights/last.pt), resume from "
-                         "it instead of starting fresh. deterministic=True + "
-                         "resume restores the RNG state; Kaggle's /kaggle/working "
-                         "persists between Save-Version runs, so this is the "
-                         "cross-session continuation path on Kaggle.")
+                         "it instead of starting fresh. Resume restores model/"
+                         "optimizer/EMA/epoch and the epoch-seeded shuffle order; "
+                         "the augmentation stream restarts (no RNG state is "
+                         "checkpointed), so a resumed run is valid but not "
+                         "sequence-identical. On Kaggle, re-attach the previous "
+                         "session's output and COPY roboat/ into /kaggle/working "
+                         "first - /kaggle/input is read-only.")
     args = ap.parse_args()
     from ultralytics import YOLO
 
@@ -117,13 +121,29 @@ def main():
                   f"on {train_yaml}")
             continue
         last_pt = Path("roboat") / f"baseline_{model_name}" / "weights" / "last.pt"
-        if args.resume and last_pt.exists():
-            # mirror of the notebook resume logic: YOLO(last.pt) + resume=True
-            # (deterministic=True restores the RNG state); YOLO loader only,
-            # never raw torch.load
-            print(f"resuming {model_name} from {last_pt}")
-            model = YOLO(str(last_pt))
-            model.train(resume=True)
+        if args.resume and not last_pt.exists():
+            # fail-fast instead of silently training 100 fresh epochs while the
+            # user believes the run resumed
+            raise SystemExit(f"--resume: {last_pt} not found. Re-attach the "
+                             f"previous session's output and copy roboat/ into "
+                             f"the working directory, or drop --resume.")
+        if args.resume:
+            # mirror of the notebook resume logic: YOLO(last.pt) + resume=True.
+            # Guard against resuming a COMPLETED run: ultralytics strips the
+            # optimizer from last.pt at final_eval, and train(resume=True) then
+            # silently starts a fresh COCO8 run. Resume restores model/optimizer/
+            # EMA/epoch; the augmentation stream restarts (no RNG continuation).
+            # YOLO loader only, never raw torch.load.
+            probe = YOLO(str(last_pt))
+            ck = getattr(probe, "ckpt", {}) or {}
+            if ck.get("epoch", -1) >= 0 and ck.get("optimizer") is not None:
+                print(f"resuming {model_name} from {last_pt}")
+                model = probe
+                model.train(resume=True)
+            else:
+                print(f"{model_name} already finished (no optimizer state in "
+                      f"last.pt) - evaluating its best.pt instead of retraining")
+                model = YOLO(str(Path("roboat") / f"baseline_{model_name}" / "weights" / "best.pt"))
         else:
             model = YOLO(weights)
             model.train(data=str(train_yaml), epochs=EPOCHS, patience=PATIENCE,

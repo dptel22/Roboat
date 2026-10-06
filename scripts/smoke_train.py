@@ -121,26 +121,20 @@ def build_dataset() -> Path:
             lbl_dir / (p.stem + ".txt"), DST / "labels" / split / (p.stem + ".txt")
         )
 
-    # Verify what we just built.
-    prefixes: dict[str, int] = {}
+    # Verify what we just built: pair counts + stratification floor.
     for split in ("train", "val"):
         n_img = len(list((DST / "images" / split).iterdir()))
         n_lbl = len(list((DST / "labels" / split).iterdir()))
         if n_img != N_TRAIN or n_lbl != N_TRAIN:
             fail(f"split '{split}' has {n_img} images / {n_lbl} labels, want 8/8")
-    for p in sorted((DST / "images").rglob("*")):
+    prefixes: dict[str, int] = {}
+    for p in (DST / "images").rglob("*"):
         if p.suffix.lower() in IMG_EXTS:
-            prefixes[p.stem.split("_", 1)[0]] = prefixes.get(
-                p.stem.split("_", 1)[0], 0
-            ) + 1
+            prefixes[p.stem.split("_", 1)[0]] = prefixes.get(p.stem.split("_", 1)[0], 0) + 1
     for prefix, min_count in STRATIFY.items():
-        if prefixes.get(prefix, 0) < min_count and len(
-            [p for p in images if p.stem.startswith(prefix + "_")]
-        ) >= min_count:
-            fail(
-                f"stratification failed: {prefixes.get(prefix, 0)} '{prefix}_*' "
-                f"images copied, wanted >= {min_count}"
-            )
+        if prefixes.get(prefix, 0) < min_count:
+            fail(f"stratification failed: {prefixes.get(prefix, 0)} '{prefix}_*' "
+                 f"images copied, wanted >= {min_count}")
     print(f"SMOKE dataset: 8/8 train/val pairs, stem prefixes: {prefixes}")
     return DST
 
@@ -197,14 +191,6 @@ def train_and_val(yaml_path: Path) -> None:
 
     map50 = float(metrics.box.map50)
     print(f"SMOKE val mAP50 (all): {map50:.4f}")
-    ap50 = getattr(metrics.box, "ap50", None)
-    cls_idx = getattr(metrics.box, "ap_class_index", None)
-    if ap50 is not None and cls_idx is not None:
-        for i, cls_id in enumerate(cls_idx):
-            print(
-                f"SMOKE val AP50 ({metrics.names[int(cls_id)]}): "
-                f"{float(ap50[i]):.4f}"
-            )
 
     if not (0.0 <= map50 <= 1.0):
         fail(f"mAP50 out of range: {map50}")
@@ -222,8 +208,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         SystemExit(main())
-    except SystemExit:
-        raise
     except Exception as exc:  # noqa: BLE001 - smoke test reports any failure
         print(f"SMOKE FAIL: {type(exc).__name__}: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
