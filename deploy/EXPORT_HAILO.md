@@ -1,6 +1,10 @@
-# Exporting RoBoat YOLO → Hailo-8L (Raspberry Pi 5)
+# Exporting RoBoat YOLO → Hailo-8 (Raspberry Pi 5)
 
-Target: Hailo-8L on Pi 5, running a 2-class (litter / hyacinth) nano detector.
+Target: Hailo-8 on Pi 5 (26 TOPS), running a 2-class (litter / hyacinth) nano
+detector. *(Hardware target corrected from Hailo-8L to Hailo-8 by the user,
+2026-10-06 — the research conclusions carry over: the HAILO8 detection list
+likewise has no P2 variant (grep over all 1,122 lines: 0 hits), and the extra
+TOPS headroom makes the custom P2 compile route more practical, not less.)*
 Two routes are documented. **Route A (ONNX + hailomz) is primary** per project
 decision; Route B is Ultralytics' integrated export.
 
@@ -17,8 +21,9 @@ Verified facts (full citations in `reports/DECISIONS_LOG.md`):
 - ONNX **opset 11** is what Hailo itself uses: the Model Zoo v2.19.1 yolov8
   retrain guide (`hailo_model_zoo` v2.19.1, `training/yolov8/README.rst` line 94)
   runs `yolo export ... format=onnx opset=11`.
-- Hailo Model Zoo HAILO8L object-detection list includes **yolov8n and
-  yolov11n** — both our baseline models are compilable.
+- Hailo Model Zoo **HAILO8** object-detection list includes **yolov8n and
+  yolov11n** — both our baseline models are compilable (verified 2026-10-06:
+  both rows carry precompiled `hailo8` HEF links, HTTP 200).
 - DFC wheels come from the **Hailo Developer Zone** (free registration).
 
 ## Route A (primary): ONNX → hailomz
@@ -40,7 +45,7 @@ Verified facts (full citations in `reports/DECISIONS_LOG.md`):
 3. In WSL2/Docker with DFC 3.x installed:
    ```bash
    pip install hailo-dataflow-compiler==3.* hailo-model-zoo   # from Developer Zone
-   hailomz compile --hw-arch hailo8l --ckpt best.onnx \
+   hailomz compile --hw-arch hailo8 --ckpt best.onnx \
        --calib-path data/processed/calib/images \
        --classes 2 --performance
    ```
@@ -80,9 +85,10 @@ RAM envelope — assume it may not, and have a local Linux/WSL2 fallback.
 
 ## Route B (alternative): Ultralytics native export
 
-Current Ultralytics supports `model.export(format="hailo", name="hailo8l",
-imgsz=960, data=dataset.yaml)` — validated on Hailo-8L (DFC 3.33/HailoRT 4.23,
-now superseded by the pinned stack above). It still requires DFC on a Linux
+Current Ultralytics supports `model.export(format="hailo", name="hailo8",
+imgsz=960, data=dataset.yaml)` — the flow was validated on Hailo-8L (DFC
+3.33/HailoRT 4.23, now superseded by the pinned stack above); pass
+`name="hailo8"` for this hardware target. It still requires DFC on a Linux
 x86_64 host (internally: .pt → ONNX → parse → INT8 calibration → HEF, then
 deletes the intermediate ONNX). Use Route A when you want explicit control over
 calibration images and quantization flags; use Route B for convenience.

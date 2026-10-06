@@ -2,7 +2,7 @@
 
 USV (unmanned surface vehicle) detection pipeline for floating litter and water
 hyacinth on Bengaluru lakes. Train YOLO on Kaggle → export ONNX → compile to
-Hailo-8L HEF → run on Raspberry Pi 5.
+Hailo-8 HEF → run on Raspberry Pi 5.
 
 ## Pipeline
 
@@ -37,7 +37,7 @@ python deploy/make_calib_set.py           # 1,024-image INT8 calibration set
 # 2. train on Kaggle — see kaggle/README.md (zip data/processed, upload, run)
 python kaggle/train_baseline.py --data-root /kaggle/input/roboat-processed
 
-# 3. deploy — see deploy/EXPORT_HAILO.md (ONNX → hailomz → HEF, Hailo-8L)
+# 3. deploy — see deploy/EXPORT_HAILO.md (ONNX → hailomz → HEF, Hailo-8)
 ```
 
 ## Key decisions (details + citations in reports/DECISIONS_LOG.md)
@@ -46,9 +46,10 @@ python kaggle/train_baseline.py --data-root /kaggle/input/roboat-processed
   CLIP near-duplicates; group re-split → 0.8% pHash).
 - imgsz **960** from box-size audit (FML <8px share 18.1%@640 → 2.6%@960).
 - 2-class primary (`litter`, `hyacinth`) + 3-class ablation
-  (`entangled_plastic`); RFS t=0.75 (r_hyacinth≈3.1) for imbalance.
-- Hagenbeek aerial images tiled 640/512 (≥40% area rule), capped share.
-- AquaTrash = out-of-domain eval only. Saigon profiled, not merged (pending).
+  (`entangled_plastic`); RFS t=2.0 (r_hyacinth=3.30, post-Saigon-merge recompute).
+- Hagenbeek + Saigon aerial images tiled 640/512 (≥40% area rule), capped share.
+- AquaTrash = out-of-domain eval only. Saigon merged via tiling (CP2); box
+  counts reconcile through tiling (scripts/reconcile_boxes.py).
 
 ## Reproducibility
 

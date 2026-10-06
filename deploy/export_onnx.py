@@ -32,7 +32,7 @@ def main():
                        dynamic=False, simplify=True, half=False)
     print(f"ONNX written: {out}")
     print("Next (Linux x86_64 with Hailo DFC 3.x, see deploy/EXPORT_HAILO.md):")
-    print(f'  hailomz compile --hw-arch hailo8l --calib-path <calib_dir> '
+    print(f'  hailomz compile --hw-arch hailo8 --calib-path <calib_dir> '
           f'--classes 2 --performance "..." {out}')
 
 
