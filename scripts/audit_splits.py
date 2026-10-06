@@ -1,17 +1,23 @@
 """T1 - Split leakage audit and grouping decision (D3).
 
-Read-only on data/raw. Outputs:
+Read-only on data/raw plus the CP2 saigon extraction and the Run C donor
+archives (data/processed/saigon_src, data/processed/donors). Outputs:
   data/processed/audit/manifest.csv          - every image: source, path, class counts, original split, proposed group_id
   data/processed/audit/filename_analysis.csv - per-source filename/sequence-id analysis summary rows
   data/processed/audit/leakage_audit.csv     - per eval image: nearest train neighbour (pHash bits, CLIP cosine)
   data/processed/audit/group_proposal.csv    - per group: size, original split composition
 Prints a summary and the proposed re-split plan. --dry-run processes a bounded sample.
 
+Run C donors (mendeley, navsci_invasive, navsci_whd) are enumerated with the
+donor audit's dedupe (hd<=8) and polygon-label exclusions applied, so group
+sizes match what build_dataset.py emits; only kept images are grouped.
+
 NOTE: analysis only - does NOT write any split lists (that is build_dataset.py).
 """
 import argparse
 import csv
 import json
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -22,7 +28,8 @@ import numpy as np
 SEED = 42
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw"
-AUDIT = ROOT / "data" / "processed" / "audit"
+PROC = ROOT / "data" / "processed"
+AUDIT = PROC / "audit"
 
 MANIFEST_HEADER = ["source", "original_path", "original_class", "mapped_class",
                    "split", "group_id", "tile_info"]
@@ -133,6 +140,37 @@ def hag_group(path):
     return "hag_" + path.stem
 
 
+def men_group(stem):
+    """Mendeley j26w4m645z.2 (Run C donor): video frames IMG_NNNN_frame_NNNNN
+    share one group per video source (24 sources, each confined to exactly one
+    donor split - subset-consistent); FOTO_NNNN are independent stills that
+    span all three donor splits -> one group per image."""
+    if stem.startswith("IMG_"):
+        return "men_v" + "_".join(stem.split("_")[:2])  # men_vIMG_6301
+    return "men_" + stem  # FOTO still: per-image group
+
+
+RF_SUFFIX_RE = re.compile(r"^(?P<base>.+)_[A-Za-z0-9]+\.rf\.[0-9a-f]{32}$", re.IGNORECASE)
+
+
+def navsci_group(stem):
+    """Navsci donors (Run C: invasive-aquatic-plants v12 + water-hyacinth-detection
+    v1): Roboflow stems are '<source>_<ext>.rf.<32hex>' with the rf hash DIFFERING
+    between the two exports, so the original image is recovered by stripping the
+    rf suffix CASE-INSENSITIVELY (audit: 5 sources leak across the two DONORS via
+    case-variant rf stems, e.g. '14_jpg.rf...' vs '14_JPG.rf...'; group_proposal.csv
+    additionally shows 24 navsci_invasive groups spanning more than one of the
+    donor's OWN train/val/test pre-splits, e.g. nav_water-lettuce-123- = 23 train
+    + 7 test). One group per original image absorbs both leak paths, and the
+    group id is SHARED across both Navsci donors - invasive's 544
+    water_hyacinth_NNN sources are a subset of whd's 584, so per-donor group
+    prefixes would let the same source photo leak across train/val/test."""
+    m = RF_SUFFIX_RE.search(stem)
+    if not m:
+        raise ValueError(f"navsci stem without rf hash suffix: {stem}")
+    return "nav_" + m.group("base").lower()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="sample 300 images per source")
@@ -200,6 +238,111 @@ def main():
                          "_img": p, "_nboxes": n_boxes})
     groups_by_src["hagenbeek"] = hag_recs
 
+    # ---------------- Saigon (CP2; section RESTORED for Run C) ----------------
+    # git history lost this section (git log -S saigon on this file is empty)
+    # while the on-disk audit CSVs carry 272 saigon rows: no reliable sequence
+    # id (DJI/Gopro stills) -> one group per original image, same discipline as
+    # Hagenbeek (D3d); tiles keep the group later (build_dataset.py).
+    saigon_dir = PROC / "saigon_src" / "extracted"
+    sai_recs = []
+    for p in sorted(saigon_dir.glob("images/*.[jJ][pP][gG]")):
+        lf = saigon_dir / "labels" / (p.stem + ".txt")
+        n_boxes = 0
+        if lf.exists():
+            n_boxes = sum(1 for l in lf.read_text().splitlines() if len(l.split()) == 5)
+        sai_recs.append({"source": "saigon", "original_path": str(p.relative_to(ROOT)),
+                         "original_class": "yolo:ff_litter,hyacinth,ent_litter" if n_boxes else "",
+                         "mapped_class": "(per-box after tiling)", "split": "",
+                         "group_id": "sai_" + p.stem, "tile_info": "",
+                         "_img": p, "_nboxes": n_boxes})
+    if args.dry_run:
+        sai_recs = sai_recs[::max(1, len(sai_recs) // 300)]
+    groups_by_src["saigon"] = sai_recs
+
+    # ---------------- Donors (Run C, CC BY 4.0; USER DECISION 2026-10-06) ----------------
+    # Mapping ("operational mat class"): mendeley floating_waste -> litter(0),
+    # river_vegetation -> hyacinth(1); Navsci water_hyacinth / Giant Salvinia /
+    # Water Lettuce -> ALL hyacinth(1). Class-id order is read from each
+    # archive's own data.yaml (never assumed). Exclusions carried over from the
+    # donor audit round (data/processed/donors/):
+    #   - pHash near-duplicates hd<=8 (first-seen: existing originals ->
+    #     mendeley -> navsci_invasive -> navsci_whd) per _dedupe_result.json;
+    #   - navsci_invasive segmentation-polygon label files (762, all raw class
+    #     'Water Lettuce') per _audit_polygon_labels.json - DROPPED, not
+    #     polygon->bbox converted (that would inject 762 near-full-frame boxes).
+    # Only kept images are grouped, so split assignment sizes match what
+    # build_dataset.py will actually emit.
+    donors = PROC / "donors"
+    dedupe_json = donors / "_dedupe_result.json"
+    poly_json = donors / "_audit_polygon_labels.json"
+    if not dedupe_json.exists() or not poly_json.exists():
+        raise SystemExit(f"missing donor audit artifacts under {donors}: "
+                         "run the donor audit round first (_audit_phash_dedupe.py, "
+                         "_audit_polygon_labels.json)")
+    donor_dropped = {d["path"] for d in json.loads(dedupe_json.read_text(encoding="utf-8"))["drops"]}
+    poly = {(e["split"], e["stem"])
+            for e in json.loads(poly_json.read_text(encoding="utf-8"))}
+    # USER DECISION vocabulary; any name outside it is a hard error downstream
+    DONOR_NAME_MAP = {"floating_waste": "litter", "river_vegetation": "hyacinth",
+                      "Water Lettuce": "hyacinth", "water_hyacinth": "hyacinth",
+                      "Giant Salvinia": "hyacinth"}
+
+    def _yaml_names(data_yaml):
+        m = re.search(r"^names:\s*\[(.*?)\]", data_yaml.read_text(encoding="utf-8"), re.M)
+        if not m:
+            raise ValueError(f"cannot parse names from {data_yaml}")
+        return [s.strip().strip("'\"") for s in m.group(1).split(",")]
+
+    def donor_recs(source, root, splits, group_fn, poly_guard=False):
+        names = _yaml_names(root / "data.yaml")
+        recs, n_drop, n_poly, n_unmapped = [], 0, 0, 0
+        for sp in splits:
+            for p in sorted((root / sp / "images").glob("*.jpg")):
+                if p.relative_to(ROOT).as_posix() in donor_dropped:
+                    n_drop += 1
+                    continue
+                if poly_guard and (sp, p.stem) in poly:
+                    n_poly += 1
+                    continue
+                lf = root / sp / "labels" / (p.stem + ".txt")
+                mapped, n_boxes = set(), 0
+                if lf.exists():
+                    for l in lf.read_text().splitlines():
+                        t = l.split()
+                        if len(t) != 5:
+                            continue
+                        n_boxes += 1
+                        try:
+                            mapped.add(DONOR_NAME_MAP[names[int(t[0])]])
+                        except (KeyError, ValueError, IndexError):
+                            mapped.add("UNMAPPED")
+                n_unmapped += ("UNMAPPED" in mapped)
+                recs.append({"source": source,
+                             "original_path": p.relative_to(ROOT).as_posix(),
+                             "original_class": "yolo:" + ",".join(names) if n_boxes else "",
+                             "mapped_class": "+".join(sorted(mapped)),
+                             "split": "val" if sp == "valid" else sp,
+                             "group_id": group_fn(p.stem), "tile_info": "",
+                             "_img": p, "_nboxes": n_boxes})
+        if args.dry_run:
+            recs = recs[::max(1, len(recs) // 300)]
+        print(f"  donor {source}: {len(recs)} kept images "
+              f"({n_drop} dedupe drops, {n_poly} polygon-label files"
+              f", {n_unmapped} with unmapped class)", flush=True)
+        if n_unmapped:
+            raise SystemExit(f"donor {source}: classes outside USER DECISION vocabulary")
+        return recs
+
+    print("Enumerating Run C donors (dedupe + polygon exclusions applied) ...", flush=True)
+    men_root = donors / "mendeley" / "extracted" / "Floating Waste and River Vegetation Dataset"
+    groups_by_src["mendeley"] = donor_recs("mendeley", men_root,
+                                           ("train", "val", "test"), men_group)
+    groups_by_src["navsci_invasive"] = donor_recs("navsci_invasive", donors / "navsci_invasive",
+                                                  ("train", "valid", "test"), navsci_group,
+                                                  poly_guard=True)
+    groups_by_src["navsci_whd"] = donor_recs("navsci_whd", donors / "navsci_whd",
+                                             ("train", "valid", "test"), navsci_group)
+
     # ---------------- filename analysis ----------------
     rows = []
     fml_days = Counter(Path(r["original_path"]).stem.split("_")[1] for r in fml_recs)
@@ -219,6 +362,29 @@ def main():
                  "n_images": len(hag_recs), "n_groups": len(hag_recs),
                  "group_sizes_min": 1, "group_sizes_max": 1, "group_sizes_median": 1,
                  "note": "each original image its own group; tiling keeps group (D3d)"})
+    sg = Counter(r["group_id"] for r in sai_recs)
+    rows.append({"source": "saigon", "pattern": "<DJI|GP>NNNN.jpg",
+                 "n_images": len(sai_recs), "n_groups": len(sg),
+                 "group_sizes_min": min(sg.values()), "group_sizes_max": max(sg.values()),
+                 "group_sizes_median": int(np.median(list(sg.values()))),
+                 "note": "no sequence id -> one group per original image (restored Run C section)"})
+    mg = Counter(r["group_id"] for r in groups_by_src["mendeley"])
+    rows.append({"source": "mendeley", "pattern": "IMG_NNNN_frame_NNNNN.jpg | FOTO_NNNN.jpg",
+                 "n_images": len(groups_by_src["mendeley"]), "n_groups": len(mg),
+                 "group_sizes_min": min(mg.values()), "group_sizes_max": max(mg.values()),
+                 "group_sizes_median": int(np.median(list(mg.values()))),
+                 "note": "groups = video source (IMG_NNNN frames share one group; "
+                         "FOTO stills per-image); own split honored in assign_splits "
+                         "when every group sits in one donor split"})
+    for src in ("navsci_invasive", "navsci_whd"):
+        g = Counter(r["group_id"] for r in groups_by_src[src])
+        rows.append({"source": src, "pattern": "<source>_<ext>.rf.<32hex>.jpg",
+                     "n_images": len(groups_by_src[src]), "n_groups": len(g),
+                     "group_sizes_min": min(g.values()), "group_sizes_max": max(g.values()),
+                     "group_sizes_median": int(np.median(list(g.values()))),
+                     "note": "groups = rf-stripped original image (case-insensitive), "
+                             "SHARED across both Navsci donors (nav_<base>) so the "
+                             "same source photo cannot span two splits"})
     with open(_out("filename_analysis.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader(); w.writerows(rows)
@@ -281,7 +447,8 @@ def main():
     with open(_out("manifest.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(MANIFEST_HEADER)
-        for src in ("fml", "tud_gv", "hagenbeek"):
+        for src in ("fml", "tud_gv", "hagenbeek", "saigon",
+                    "mendeley", "navsci_invasive", "navsci_whd"):
             for r in groups_by_src[src]:
                 w.writerow([r["source"], r["original_path"], r["original_class"],
                             r["mapped_class"], r["split"], r["group_id"], r["tile_info"]])

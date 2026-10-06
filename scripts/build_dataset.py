@@ -1,6 +1,7 @@
-"""T3 - Build the merged YOLO dataset (D1, D2, D4, D6, D7, D8, D9, D10).
+"""T3 - Build the merged YOLO dataset (D1, D2, D4, D6, D7, D8, D9, D10; Run C donors).
 
-Read-only on data/raw. Writes under data/processed/:
+Read-only on data/raw plus the CP2 saigon extraction and the Run C donor
+archives (data/processed/donors). Writes under data/processed/:
   merged2/  PRIMARY 2-class tree: images|labels /{train,val,test}   (0 litter, 1 hyacinth)
   merged3/  ABLATION 3-class tree: images (hardlinks) |labels        (0 litter, 1 hyacinth, 2 entangled_plastic)
   lists/    per-source val/test txts + combined; train.txt (RFS-expanded), train_base.txt
@@ -8,12 +9,21 @@ Read-only on data/raw. Writes under data/processed/:
   ood_aquatrash/ (D6) + yaml; manifest.csv; build_stats.json; box_size_stats.csv; rfs_table.csv
   contact sheet of Hagenbeek empty-label images (D9) -> data/exploration_samples/processed/
 
+Run C donors (surface imagery, CC BY 4.0, "operational mat class" USER DECISION
+2026-10-06): mendeley floating_waste->litter(0) / river_vegetation->hyacinth(1);
+Navsci water_hyacinth / Giant Salvinia / Water Lettuce -> ALL hyacinth(1). Class
+ids are mapped through each archive's own data.yaml names (discovered, never
+assumed). Donor images already excluded by the audit round (pHash hd<=8 dedupe,
+navsci_invasive polygon labels) are skipped here; the donors are surface frames
+and are NOT part of the 35% aerial cap.
+
 --dry-run: computes everything (stats, manifest, tables) but writes NO dataset files.
 """
 import argparse
 import csv
 import json
 import random
+import re
 import shutil
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -34,7 +44,10 @@ TILE, STRIDE, MIN_AREA_FRAC = 640, 512, 0.40
 MAX_EMPTY_TILE_FRAC = 0.15
 MAX_AERIAL_SHARE = 0.35
 MAX_BG_FRAC = 0.10
-RFS_TS = [0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0]
+# Run C: grid extended past 2.0 - the mostly-hyacinth Navsci donors push
+# f_hyacinth toward ~0.23, so no t <= 2.0 reaches r_hyacinth >= 3 anymore.
+RFS_TS = [0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0,
+          2.5, 3.0, 4.0]
 
 
 def yolo_boxes(lab_path):
@@ -48,6 +61,28 @@ def yolo_boxes(lab_path):
                 except ValueError:
                     pass
     return out
+
+
+RF_SUFFIX_RE = re.compile(r"^(?P<base>.+)_[A-Za-z0-9]+\.rf\.[0-9a-f]{32}$", re.IGNORECASE)
+
+
+def navsci_group(stem):
+    """One group per original image, SHARED across both Navsci donors: strip the
+    Roboflow rf hash suffix case-insensitively ('14_jpg.rf...' vs '14_JPG.rf...'
+    is the same source). Must mirror audit_splits.navsci_group exactly."""
+    m = RF_SUFFIX_RE.search(stem)
+    if not m:
+        raise ValueError(f"navsci stem without rf hash suffix: {stem}")
+    return "nav_" + m.group("base").lower()
+
+
+def men_group(stem):
+    """Mendeley group: video frames IMG_NNNN_frame_NNNNN -> one group per video
+    source; FOTO_NNNN stills -> one group per image. Must mirror
+    audit_splits.men_group exactly."""
+    if stem.startswith("IMG_"):
+        return "men_v" + "_".join(stem.split("_")[:2])
+    return "men_" + stem
 
 
 def place(img_src, stem, split, b2, b3, dry):
@@ -88,6 +123,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--max-aerial-share", type=float, default=MAX_AERIAL_SHARE)
+    ap.add_argument("--rfs", action="store_true",
+                    help="enable Repeat Factor Sampling (D7). DEFAULT OFF for Run C: "
+                         "the donor merge rebalanced hyacinth at the image level "
+                         "(f_hyacinth 0.1834 -> ~0.49), so stacking RFS on top "
+                         "double-corrects (D7 override logged 2026-10-06). Pass "
+                         "--rfs to reproduce the CP4-era behavior as an ablation.")
     args = ap.parse_args()
     dry = args.dry_run
     rng = random.Random(SEED)
@@ -165,6 +206,93 @@ def main():
             stats["empties"]["tud_gv"] += 1
             empties_tud.append((str(p.relative_to(RAW)), g, split, p))
         stats["per_split"][split]["tud_gv"] += 1
+
+    # ---------- Donor surface sources (Run C, CC BY 4.0) ----------
+    # USER DECISION 2026-10-06 ("operational mat class"): mendeley
+    # floating_waste -> litter(0), river_vegetation -> hyacinth(1); Navsci
+    # water_hyacinth / Giant Salvinia / Water Lettuce -> ALL hyacinth(1).
+    # Raw class ids are mapped THROUGH each archive's own data.yaml names -
+    # the id order differs between archives (mendeley river_vegetation=1,
+    # invasive water_hyacinth=1, whd water_hyacinth=0), so it is never assumed.
+    # Exclusions mirror audit_splits.py exactly: images dropped by the audit
+    # round's pHash dedupe (_dedupe_result.json) and navsci_invasive
+    # segmentation-polygon label files (_audit_polygon_labels.json, DROPPED
+    # not converted - conversion would inject 762 near-full-frame boxes).
+    # Surface imagery: deliberately NOT added to the aerial cap below.
+    DONOR_NAME_MAP = {"floating_waste": "litter", "river_vegetation": "hyacinth",
+                      "Water Lettuce": "hyacinth", "water_hyacinth": "hyacinth",
+                      "Giant Salvinia": "hyacinth"}
+    donors_dir = PROC / "donors"
+    donor_dropped = {d["path"] for d in
+                     json.loads((donors_dir / "_dedupe_result.json").read_text(encoding="utf-8"))["drops"]}
+    donor_poly = {(e["split"], e["stem"]) for e in
+                  json.loads((donors_dir / "_audit_polygon_labels.json").read_text(encoding="utf-8"))}
+
+    def donor_cmap(data_yaml):
+        m = re.search(r"^names:\s*\[(.*?)\]", data_yaml.read_text(encoding="utf-8"), re.M)
+        if not m:
+            raise ValueError(f"cannot parse names from {data_yaml}")
+        names = [s.strip().strip("'\"") for s in m.group(1).split(",")]
+        cmap = {}
+        for i, nm in enumerate(names):
+            if nm not in DONOR_NAME_MAP:
+                raise ValueError(f"donor class {nm!r} outside USER DECISION "
+                                 f"vocabulary ({data_yaml})")
+            cmap[i] = CLASS2[DONOR_NAME_MAP[nm]]
+        return names, cmap
+
+    def donor_emit(source, ocls, p, split, g, cmap, lab_dir):
+        boxes = []
+        for c, x, y, w, h in yolo_boxes(lab_dir / (p.stem + ".txt")):
+            if c not in cmap:
+                raise ValueError(f"class id {c} outside donor vocabulary: {p}")
+            boxes.append((cmap[c], x, y, w, h))
+        if not boxes:
+            stats["empties"][source] += 1
+            return  # audit: 0 empty donor labels; counted loudly here if one appears
+        with Image.open(p) as im:
+            W, H = im.size
+        add_px(source, W, H, boxes)
+        stats["box_counts"][source][split] += len(boxes)
+        emit(source, p.relative_to(ROOT).as_posix(), ocls, split, g, "",
+             {"mendeley": "men_", "navsci_invasive": "niv_", "navsci_whd": "nwh_"}[source] + p.stem,
+             p, boxes, boxes, W, H)
+        stats["per_split"][split][source] += 1
+
+    men_dir = donors_dir / "mendeley" / "extracted" / "Floating Waste and River Vegetation Dataset"
+    men_names, men_cmap = donor_cmap(men_dir / "data.yaml")
+    men_ocls = "yolo:" + ",".join(men_names)
+    n_men_dropped = 0
+    for split_dir in ("train", "val", "test"):
+        for p in sorted((men_dir / split_dir / "images").glob("*.jpg")):
+            if p.relative_to(ROOT).as_posix() in donor_dropped:
+                n_men_dropped += 1
+                continue
+            donor_emit("mendeley", men_ocls, p, assign[("mendeley", men_group(p.stem))],
+                       men_group(p.stem), men_cmap, men_dir / split_dir / "labels")
+    print(f"mendeley: skipped {n_men_dropped} dedupe-dropped images "
+          f"(expect 630); empties={stats['empties']['mendeley']}", flush=True)
+
+    for source, ddir, splits, poly_guard in (
+            ("navsci_invasive", donors_dir / "navsci_invasive", ("train", "valid", "test"), True),
+            ("navsci_whd", donors_dir / "navsci_whd", ("train", "valid", "test"), False)):
+        names, cmap = donor_cmap(ddir / "data.yaml")
+        ocls = "yolo:" + ",".join(names)
+        n_dropped = n_poly = 0
+        for split_dir in splits:
+            for p in sorted((ddir / split_dir / "images").glob("*.jpg")):
+                if p.relative_to(ROOT).as_posix() in donor_dropped:
+                    n_dropped += 1
+                    continue
+                if poly_guard and (split_dir, p.stem) in donor_poly:
+                    n_poly += 1
+                    continue
+                donor_emit(source, ocls, p, assign[(source, navsci_group(p.stem))],
+                           navsci_group(p.stem), cmap, ddir / split_dir / "labels")
+        print(f"{source}: skipped {n_dropped} dedupe-dropped images (expect "
+              f"{'449' if source == 'navsci_invasive' else '173'}), {n_poly} polygon-label "
+              f"files (expect {'673' if source == 'navsci_invasive' else '0'}); "
+              f"empties={stats['empties'][source]}", flush=True)
 
     # ---------- Tiled aerial sources: Hagenbeek (D3d, D4, D9) + Saigon (CP2) ----------
     # Saigon groups: no reliable sequence id (DJI/Gopro stills) -> one group per
@@ -317,14 +445,34 @@ def main():
                          "f_hyacinth": round(freq["hyacinth"], 4),
                          "r_litter": round(r["litter"], 2), "r_hyacinth": round(r["hyacinth"], 2)})
     ok_ts = [t for t in RFS_TS if 3 <= r_by_t[t]["hyacinth"] <= 6]
-    t_use = ok_ts[0] if ok_ts else RFS_TS[-1]
+    if ok_ts:
+        t_use = ok_ts[0]
+    else:
+        # LOUD fallback: silently reusing the last t would hide a broken class
+        # balance (this fires only when NO grid point lands r_hyacinth in [3,6])
+        t_use = RFS_TS[-1]
+        print(f"WARNING: no RFS t in {RFS_TS} puts r_hyacinth in [3,6] "
+              f"(f_hyacinth={freq['hyacinth']:.4f}); falling back to t={t_use} "
+              f"(r_hyacinth={r_by_t[t_use]['hyacinth']:.2f}) - inspect "
+              f"rfs_table.csv and the class balance before training", flush=True)
     r_use = r_by_t[t_use]
-    rep_counts = {}
-    for r_ in train_rows:
-        ri = max((r_use[nm] for nm in img_classes[r_["final_stem"]]), default=1.0)
-        rep_counts[r_["final_stem"]] = max(1, int(ri))  # floor; repeats in list
-    for r_ in man:
-        r_["rfs_repeat"] = rep_counts.get(r_["final_stem"], 1) if r_["split"] == "train" else 1
+    if args.rfs:
+        rep_counts = {}
+        for r_ in train_rows:
+            ri = max((r_use[nm] for nm in img_classes[r_["final_stem"]]), default=1.0)
+            rep_counts[r_["final_stem"]] = max(1, int(ri))  # floor; repeats in list
+        for r_ in man:
+            r_["rfs_repeat"] = rep_counts.get(r_["final_stem"], 1) if r_["split"] == "train" else 1
+    else:
+        # D7 override (2026-10-06): RFS OFF for Run C - the donor merge already
+        # rebalanced hyacinth at the image level; every train image appears once.
+        for r_ in man:
+            r_["rfs_repeat"] = 1
+        print(f"RFS disabled (default for Run C): image-level f_hyacinth="
+              f"{freq['hyacinth']:.4f}, f_litter={freq['litter']:.4f}; train.txt "
+              f"will equal train_base (no repeats). Pass --rfs to re-enable (D7 "
+              f"ablation). Box-level hyacinth share remains ~1:3 vs litter - "
+              f"hyacinth boxes are larger clusters.", flush=True)
 
     # ---------- lists + yamls (D10) ----------
     if not dry:
@@ -343,7 +491,8 @@ def main():
                 for r in rows:
                     expanded += [img_rel(r)] * r["rfs_repeat"]
                 (PROC / "lists" / "train.txt").write_text("\n".join(expanded) + "\n")
-            for src in ("fml", "tud_gv", "hagenbeek", "saigon"):
+            for src in ("fml", "tud_gv", "hagenbeek", "saigon",
+                        "mendeley", "navsci_invasive", "navsci_whd"):
                 (PROC / "lists" / f"{src}_{split}.txt").write_text(
                     "\n".join(img_rel(r) for r in rows if r["source"] == src) + "\n")
         def yaml_for(name, val_list, test_list, names):
@@ -355,7 +504,9 @@ def main():
                              f"test: {(PROC/'lists'/test_list).as_posix()}\n"
                              f"nc: {nc if isinstance(nc, int) else len(nc)}\n"
                              f"names: [{', '.join(nc if isinstance(nc, list) else list(nc))}]\n")
-        for src, nm in (("fml", "fml"), ("tud_gv", "tud_gv"), ("hagenbeek", "hagenbeek_tiles"), ("saigon", "saigon_tiles")):
+        for src, nm in (("fml", "fml"), ("tud_gv", "tud_gv"), ("hagenbeek", "hagenbeek_tiles"),
+                        ("saigon", "saigon_tiles"), ("mendeley", "mendeley"),
+                        ("navsci_invasive", "navsci_invasive"), ("navsci_whd", "navsci_whd")):
             yaml_for(nm, f"{src}_val.txt", f"{src}_test.txt", None)
         yaml_for("combined", "val_base.txt", "test_base.txt", None)
 

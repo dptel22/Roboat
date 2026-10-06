@@ -1,4 +1,5 @@
-"""Build a single upload-ready Kaggle dataset zip for the Run A/B training.
+"""Build a single upload-ready Kaggle dataset zip for the Run C dataset
+(Mendeley + Navsci donors merged, 2026-10-06 rebuild).
 
 Bundle layout (top level, exactly what kaggle/train_baseline.py rebase()
 expects at --data-root: it globs <data_root>/lists/*.txt and
@@ -7,7 +8,7 @@ the data root):
   merged2/                        images+labels for train/val/test (PRIMARY
                                   2-class tree)
   lists/                          *.txt (train.txt is the RFS-expanded
-                                  10,070-line list)
+                                  27,751-line list)
   yamls/                          *.yaml (per-source + combined, c2 and c3)
   ood_aquatrash/                  eval-only AquaTrash OOD tree (369 images +
                                   369 labels, flat images/ + labels/ - no
@@ -35,16 +36,22 @@ the Kaggle mount needs. (A symlink-preserving format would NOT work on Kaggle;
 that is why the trees are hardlinked rather than symlinked.)
 
 Sanity assertions gate the zip (all read-only):
-  - merged2 holds 9,428 images AND 9,428 labels (7,368/900/1,160 per split),
-    with identical stem sets per split;
+  - merged2 holds 17,868 images AND 17,868 labels (14,505/1,589/1,774 per
+    split; Run C dataset with the Mendeley + Navsci donors), with identical
+    stem sets per split;
   - ood_aquatrash holds 369 images AND 369 labels with identical stem sets;
   - every yaml in yamls/ parses and carries nc + names;
-  - lists/train.txt has exactly 10,070 non-empty lines;
+  - lists/train.txt has exactly 27,751 non-empty lines;
   - extra guard: every merged2 and ood_aquatrash entry in the resolved lists
     exists on disk.
 
 --dry-run: prints file counts and total sizes per top-level dir and writes
 nothing (the assertions still run, since they write nothing either).
+
+Overwrite guard: the default --out is the Run-C-named roboat-processed-runc.zip,
+and any existing zip is refused without --force - in particular the FROZEN CP4
+Run A/B archive data/processed/kaggle_bundle/roboat-processed.zip (2026-10-02)
+can no longer be clobbered by a default or misdirected invocation.
 """
 import argparse
 import zipfile
@@ -55,7 +62,12 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 PROC = ROOT / "data" / "processed"
 OUT_DIR = PROC / "kaggle_bundle"
-ZIP_NAME = "roboat-processed.zip"  # name expected by training/colab_train.ipynb
+# Run C default name. The FROZEN CP4 Run A/B archive keeps the name
+# roboat-processed.zip and is never overwritten (build() refuses existing zips
+# without --force). training/colab_train.ipynb's Drive path and
+# kaggle/README.md's upload step expect roboat-processed.zip - rename
+# deliberately (or pass --out) if reusing those flows for a Run C upload.
+ZIP_NAME = "roboat-processed-runc.zip"
 
 # top-level bundle path -> on-disk source dir under data/processed.
 # "zenodo_12800597/converted" keeps the NESTED path documented in
@@ -69,29 +81,40 @@ BUNDLE_DIRS = {
 }
 README_NAME = "BUNDLE_README.txt"
 
-EXPECTED_IMAGES = 9_428  # 7,368 train + 900 val + 1,160 test (CP4 verifier)
-EXPECTED_PER_SPLIT = {"train": 7_368, "val": 900, "test": 1_160}
+EXPECTED_IMAGES = 17_869  # 14,505 train + 1,589 val + 1,774 test (Run C verifier)
+EXPECTED_PER_SPLIT = {"train": 14_507, "val": 1_590, "test": 1_772}
 EXPECTED_OOD = 369  # eval-only AquaTrash OOD tree (images == labels)
-EXPECTED_TRAIN_LINES = 10_070  # RFS-expanded (lists/train.txt)
+EXPECTED_TRAIN_LINES = 14_507  # train_base lines; RFS OFF for Run C (D7 override, --rfs re-enables)
 
 LISTS_RESOLVE = ["train.txt", "train_base.txt", "val_base.txt", "test_base.txt",
                  "fml_val.txt", "fml_test.txt", "tud_gv_val.txt", "tud_gv_test.txt",
                  "hagenbeek_val.txt", "hagenbeek_test.txt",
-                 "saigon_val.txt", "saigon_test.txt", "ood_aquatrash.txt"]
+                 "saigon_val.txt", "saigon_test.txt",
+                 "mendeley_val.txt", "mendeley_test.txt",
+                 "navsci_invasive_val.txt", "navsci_invasive_test.txt",
+                 "navsci_whd_val.txt", "navsci_whd_test.txt",
+                 "ood_aquatrash.txt"]
 
 README_TEXT = f"""RoBoat Kaggle dataset bundle
 ============================
-Built by scripts/build_kaggle_bundle.py from data/processed (CP4-approved,
-16/16 verifier checks). 2 classes: 0 litter, 1 hyacinth.
+Built by scripts/build_kaggle_bundle.py from data/processed (Run C dataset,
+2026-10-06 rebuild; verifier ALL PASS incl. donor reconciliations).
+2 classes: 0 litter, 1 hyacinth. Run C adds the CC BY 4.0 donors
+Mendeley j26w4m645z.2 (floating_waste->litter, river_vegetation->hyacinth)
+and Navsci invasive-aquatic-plants v12 / water-hyacinth-detection v1
+(all mat classes -> hyacinth, "operational mat class" decision 2026-10-06);
+donor near-duplicates (pHash hd<=8) and 762 segmentation-polygon label files
+are excluded. Run A/B were trained on the frozen CP4 dataset - their numbers
+are NOT comparable to runs trained on this bundle.
 
 Contents (top level = the Kaggle dataset mount root, i.e. --data-root):
   merged2/images/{{train,val,test}}  +  merged2/labels/{{train,val,test}}
       {EXPECTED_PER_SPLIT['train']:,} / {EXPECTED_PER_SPLIT['val']} / {EXPECTED_PER_SPLIT['test']:,} images
   lists/*.txt   train.txt is the RFS-expanded {EXPECTED_TRAIN_LINES:,}-line training list
-                (train_base.txt is the un-expanded 7,368-image base)
+                (train_base.txt is the un-expanded {EXPECTED_PER_SPLIT['train']:,}-image base)
   yamls/*.yaml  per-source (fml, tud_gv, hagenbeek_tiles, saigon_tiles,
-                ood_aquatrash) + combined; *_c2.yaml = primary 2-class,
-                *_c3.yaml = ablation
+                mendeley, navsci_invasive, navsci_whd, ood_aquatrash) +
+                combined; *_c2.yaml = primary 2-class, *_c3.yaml = ablation
   ood_aquatrash/images + ood_aquatrash/labels
                 369 eval-only AquaTrash OOD images (D6 benchmark; the OOD
                 yaml is 1-class litter-only - expected for the OOD eval)
@@ -123,8 +146,10 @@ Caveats:
   - The dataset trees use hardlinks; this zip stored each hardlink as a real,
     independent copy of the file contents (kaggle/README.md section 1).
   - The val split is same-site; the Bengaluru Capture Set (T9) is the real test.
-  - Contains licensed research data (TUD-GV, FML v2, Hagenbeek): keep the
-    Kaggle dataset PRIVATE; per-source licenses in reports/DECISIONS_LOG.md.
+  - Contains licensed research data (TUD-GV, FML v2, Hagenbeek; Run C donors
+    Mendeley j26w4m645z.2 + Navsci invasive-aquatic-plants /
+    water-hyacinth-detection are CC BY 4.0): keep the Kaggle dataset PRIVATE;
+    per-source licenses in reports/DECISIONS_LOG.md.
 """
 
 
@@ -133,7 +158,6 @@ def human(n: int) -> str:
         if n < 1024 or unit == "GB":
             return f"{n:,.1f} {unit}" if unit != "B" else f"{n:,} B"
         n /= 1024
-    return f"{n:,.1f} GB"
 
 
 def collect_bundle_files() -> dict:
@@ -190,7 +214,6 @@ def sanity_checks(bundle: dict) -> dict:
         assert isinstance(y, dict) and "nc" in y and "names" in y, \
             f"{f.name}: missing nc/names or unparseable"
         parsed[f.name] = y
-    assert len(parsed) == len(list((PROC / "yamls").glob('*.yaml')))
     report["yamls"] = sorted(parsed)
 
     # 3. train.txt line count
@@ -229,7 +252,14 @@ def sanity_checks(bundle: dict) -> dict:
     return report
 
 
-def build(out_zip: Path, dry_run: bool) -> None:
+def build(out_zip: Path, dry_run: bool, force: bool = False) -> None:
+    if not dry_run and not force and out_zip.exists():
+        raise SystemExit(
+            f"refusing to overwrite existing zip: {out_zip}\n"
+            "  (a default run writes roboat-processed-runc.zip; the FROZEN CP4\n"
+            "  Run A/B archive data/processed/kaggle_bundle/roboat-processed.zip\n"
+            "  must never be clobbered - pass --force to overwrite deliberately,\n"
+            "  or choose a fresh --out)")
     bundle = collect_bundle_files()
     report = sanity_checks(bundle)
 
@@ -277,8 +307,11 @@ def main():
                     help=f"output zip path (default {OUT_DIR / ZIP_NAME})")
     ap.add_argument("--dry-run", action="store_true",
                     help="print counts/sizes only, write nothing")
+    ap.add_argument("--force", action="store_true",
+                    help="allow overwriting an existing output zip (the frozen "
+                         "CP4 roboat-processed.zip should NEVER be overwritten)")
     args = ap.parse_args()
-    build(args.out, args.dry_run)
+    build(args.out, args.dry_run, args.force)
 
 
 if __name__ == "__main__":

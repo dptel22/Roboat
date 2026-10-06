@@ -235,3 +235,34 @@ implemented, plus path/label/citation inconsistencies. Fixes:
   `export_onnx.py --dry-run` → imgsz=960, opset=11; repo-wide grep confirms no
   remaining `calib-set-path` or old-path references. No training run, no git
   commit (user commits externally).
+
+## 2026-10-06 — main (Run C gated dataset round + hardware correction)
+
+- **main**: Hailo hardware target corrected to **Hailo-8** (user-confirmed); HAILO8
+  zoo list re-verified (no P2 variant; yolov8n/yolov11n hailo8 HEFs HTTP 200);
+  deploy docs + README switched to `--hw-arch hailo8` (see DECISIONS_LOG T8 note).
+- **main**: Gated dataset round via workflow (donors: Mendeley j26w4m645z.2 public
+  download; Navsci invasive-aquatic-plants v12 + water-hyacinth-detection v1 from
+  user-downloaded archives in data/raw). Audit: 15,130 images pHash-hashed, 1,252
+  near-dupes dropped (0 vs CP4 originals); 762 navsci_invasive segmentation-polygon
+  label files found and DROPPED (would have parsed as near-full-frame bboxes);
+  scan coverage confirmed across all donors.
+- **main — user decisions applied**: (1) RFS dropped for Run C (D7 override logged;
+  `--rfs` re-enables as ablation); (2) dedupe reordered WHD-first (clean originals
+  beat augmented copies); (3) val/test label review - 4 hyacinth->litter relabels on
+  litter-dominant crops (_label_fixes_valtest.json), 44/48 smallest val/test
+  hyacinth crops confirmed genuine.
+- **main**: Rebuilt (verifier ALL PASS, 24 checks): 17,869 imgs (14,507/1,590/1,772),
+  49,694 boxes (37,986 litter + 11,708 hyacinth = 23.6% box-level; image-level
+  f_hyacinth 0.4949). CP4 archive untouched; Run A/B non-comparability documented
+  in RUN_PLAN Run C section (incl. Run C-control baseline plan + per-donor metrics).
+- **main - reviewer-flagged fixes applied**: notebook/Kaggle resume guards (no
+  resuming a COMPLETED run - ultralytics strips optimizer from last.pt and resume
+  would silently start a fresh COCO8 run), --resume fail-fast, honest RNG wording
+  (no RNG continuation across sessions), pinned ultralytics==8.4.165, ponytail
+  trims (-25 lines: dead return, tautology assert, redundant self-verify, dead
+  except-clause, per-class smoke print).
+- **main - known open items**: embedding (CLIP) test-vs-train leakage scan run
+  (report: data/processed/embedding_leakage_report.json); Mendeley river-vegetation
+  -> hyacinth mapping is the operational mat class (species-mixed by definition);
+  donor train-split label noise not yet reviewed (val/test done first per priority).

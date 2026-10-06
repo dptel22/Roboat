@@ -9,6 +9,7 @@ Reads data/processed/audit outputs; writes:
 """
 import argparse
 import csv
+import json
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -102,38 +103,82 @@ def main():
 
     rows = list(csv.DictReader(open(AUDIT / "group_proposal.csv", encoding="utf-8")))
     sizes = defaultdict(lambda: defaultdict(int))  # src -> group -> n
+    mix = {}  # (src, group) -> original split composition dict
     for r in rows:
         sizes[r["source"]][r["group_id"]] = int(r["n_images"])
+        mix[(r["source"], r["group_id"])] = json.loads(r["original_split_mix"])
 
-    comp, chosen = [], {}
-    for src, gs in sizes.items():
+    # Assignment units. Run C additions:
+    #  - mendeley ships its own 1,104/315/158 split; its groups (24 video-source
+    #    families + per-image FOTO stills) each fall ENTIRELY within one donor
+    #    split (audit: 0 multi-split families), so the own split is HONORED
+    #    verbatim when clean; otherwise the group balancing below applies.
+    #  - navsci_invasive + navsci_whd share one group namespace (nav_<rf-stripped
+    #    source>): the same original photo exists in both donors (invasive's 544
+    #    water_hyacinth_NNN sources are a subset of whd's 584), so they are
+    #    assigned JOINTLY - per-donor assignment could land the same photo in
+    #    two splits. Their own Roboflow pre-splits are therefore NOT honored
+    #    (they disagree on shared sources); greedy/KK rebalances the union.
+    UNITS = [("fml", ["fml"]), ("tud_gv", ["tud_gv"]), ("hagenbeek", ["hagenbeek"]),
+             ("saigon", ["saigon"]), ("mendeley", ["mendeley"]),
+             ("navsci_invasive+navsci_whd", ["navsci_invasive", "navsci_whd"])]
+
+    comp, chosen = [], {}  # chosen: src -> {group: split}
+    for unit, srcs in UNITS:
+        gs = defaultdict(int)
+        for s in srcs:
+            for g, n in sizes.get(s, {}).items():
+                gs[g] += n
+        if not gs:
+            print(f"{unit}: no groups - skipped")
+            continue
         total = sum(gs.values())
-        g_split = assign_greedy(gs, total)
-        k_split = assign_kk(gs)
+
         def ratios(sp):
             c = defaultdict(int)
             for g, s in sp.items():
                 c[s] += gs[g]
             return {k: round(c[k] / total, 3) for k in ("train", "val", "test")}
+
+        g_split = assign_greedy(gs, total)
+        k_split = assign_kk(gs)
         gr, kr = ratios(g_split), ratios(k_split)
         g_err = sum(abs(gr[k] - f) for k, f in (("train", .8), ("val", .1), ("test", .1)))
         k_err = sum(abs(kr[k] - f) for k, f in (("train", .8), ("val", .1), ("test", .1)))
-        use = g_split if g_err <= k_err else k_split
-        chosen[src] = use
-        comp.append({"source": src, "n_groups": len(gs),
+        use, method = (g_split, "greedy") if g_err <= k_err else (k_split, "kk")
+        if unit == "mendeley":
+            own = {}
+            clean = True
+            for s in srcs:
+                for g in sizes.get(s, {}):
+                    m = {k: v for k, v in mix.get((s, g), {}).items() if v}
+                    if len(m) != 1:
+                        clean = False
+                        break
+                    own[g] = next(iter(m))
+                if not clean:
+                    break
+            if clean:
+                use, method = own, "own_split"
+                gr = ratios(use)
+                g_err = sum(abs(gr[k] - f) for k, f in (("train", .8), ("val", .1), ("test", .1)))
+        for s in srcs:
+            chosen[s] = use
+        comp.append({"source": unit, "n_groups": len(gs),
                      "greedy_ratios": gr, "greedy_err": round(g_err, 3),
                      "kk_ratios": kr, "kk_err": round(k_err, 3),
-                     "chosen": "greedy" if g_err <= k_err else "kk"})
-        print(f"{src}: greedy={gr} (err {g_err:.3f})  kk={kr} (err {k_err:.3f})  -> {comp[-1]['chosen']}")
+                     "chosen": method})
+        print(f"{unit}: greedy={gr} (err {g_err:.3f})  kk={kr} (err {k_err:.3f})  -> {method}")
 
     with open(OUT_ASSIGN_CMP, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(comp[0].keys()))
         w.writeheader(); w.writerows(comp)
     with open(OUT_ASSIGN, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f); w.writerow(["source", "group_id", "split"])
-        for src, sp in chosen.items():
-            for g in sorted(sp):
-                w.writerow([src, g, sp[g]])
+        for unit, srcs in UNITS:
+            for s in srcs:
+                for g in sorted(chosen[s]):
+                    w.writerow([s, g, chosen[s][g]])
 
     # ---- post-split leakage re-check (FML) ----
     print("\nPost-split leakage re-check on chosen FML assignment ...", flush=True)

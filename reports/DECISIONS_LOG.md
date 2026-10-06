@@ -56,6 +56,17 @@ Pending entries are marked PENDING and filled at their checkpoint.
 - **t = 2.0 → r_hyacinth = 3.30, r_litter = 1.61 [Confirmed from rfs_table.csv].**
   Post-Saigon merge recompute: with Saigon's hyacinth tiles in train, `f_hyacinth` rises from 0.0765 to **0.1834** (18.34% of training images contain hyacinth); `f_litter` = 0.7720. At t=0.75, r_hyacinth was 2.02 (<3); extending the grid to t=2.0 lands `r_hyacinth` at 3.30 (inside the required [3, 6] range).
   `lists/train.txt` expands from 7,368 to 10,070 lines via integer-floor repeats.
+- **D7 OVERRIDE — RFS dropped for Run C [USER DECISION 2026-10-06]:** the donor
+  merge (Mendeley + Navsci, operational mat class) is itself the rebalancing —
+  image-level f_litter 0.5235 / f_hyacinth 0.4948 — so stacking RFS on top
+  double-corrects, and the r≈2.84 grid fallback was not a deliberate setting.
+  `build_dataset.py` now defaults to **no RFS** (`train.txt` = `train_base`,
+  14,507 lines for the 2026-10-06 rebuild); `--rfs` re-enables the extended
+  grid (2.5/3.0/4.0) as an ablation. Level-explicit balance: image-level
+  near-parity; **box-level** hyacinth 11,708 / 49,694 = 23.6% (~1:3 vs litter —
+  hyacinth boxes are larger clusters). The [3,6] window is superseded for Run C
+  (it remains the recorded CP4 setting). No "Foundation doc" exists in-repo for
+  the window; team sign-off (Manohar/Vasanth) noted as an out-of-repo action.
 
 ## D8 — Background negative frame budget
 
@@ -91,6 +102,7 @@ Pending entries are marked PENDING and filled at their checkpoint.
 - **DFC 3.x is the correct line for Hailo-8L.** [Confirmed] Ultralytics docs: "Hailo-8 / Hailo-8L → DFC v3.x; Hailo-10H/15 → v5.x".
 - **Model Zoo Hailo-8L network list includes both target models.** [Confirmed] `docs/public_models/HAILO8L/HAILO8L_object_detection.rst` lists `yolov8n` and `yolov11n`.
 - **Calibration / compression:** docs recommend in-domain calibration images, ≥1,024 for production; INT8-only export. Calibration set built: 1,024 images, hyacinth share 0.25, balanced fml 485 / tud_gv 193 / hagenbeek 346 (`data/processed/calib/`). [Confirmed]
+- **Hardware target correction [2026-10-06, user-confirmed]:** the deployment device is **Hailo-8 (26 TOPS), not Hailo-8L**. Re-verified against Model Zoo v2.19.1: the HAILO8 detection list likewise has **no P2 variant** (grep over all 1,122 lines: 0 hits) and carries `yolov8n`/`yolov11n` with precompiled `hailo8` HEF links (HTTP 200) — so the hyacinth-confusion research conclusions carry over unchanged, and a custom P2 compile route gains 2× TOPS headroom. Deploy docs updated to `--hw-arch hailo8`; the Hailo-8L verification records above are retained as facts about what was validated at the time.
 
 ## T9_WEIGHTS — Saigon pre-labelling weights — VERIFIED (checkpoint-level)
 

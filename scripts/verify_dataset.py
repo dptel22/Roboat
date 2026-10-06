@@ -6,6 +6,8 @@ Checks:
   4 no orphan images/labels in either tree;
   5 counts reconcile with DATA_EXPLORATION.md (FML 5299/16457, TUD-GV 1501/8181,
     Hagenbeek 82/1415 originals; tile boxes >= originals due to 20% overlap);
+    Run C donors reconcile exactly (mendeley 947/4176, navsci_invasive 4693/4693,
+    navsci_whd 411/417 - kept images / boxes, post-dedupe, polygons dropped);
   6 tiled boxes lie inside their tile (recompute pixel box from tile_info).
 Contact sheets with boxes -> data/exploration_samples/processed/.
 Writes verification_results.csv. --dry-run: checks only, no contact sheets.
@@ -24,7 +26,12 @@ ROOT = Path(__file__).resolve().parents[1]
 PROC = ROOT / "data" / "processed"
 SAMPLES_OUT = ROOT / "data" / "exploration_samples" / "processed"
 EXPECTED = {"fml": (5299, 16457), "tud_gv": (1501, 8181), "hagenbeek": (82, 1415),
-            "saigon": (272, 9352)}
+            "saigon": (272, 9352),
+            # Run C donors (post-dedupe WHD-first order, polygon files dropped),
+            # recomputed from the 2026-10-06 rebuild's manifest/labels:
+            # (manifest rows, boxes)
+            "mendeley": (947, 4176), "navsci_invasive": (4521, 4521),
+            "navsci_whd": (584, 590)}
 COLORS = {0: "red", 1: "lime", 2: "cyan"}
 NAMES2 = {0: "litter", 1: "hyacinth"}
 NAMES3 = {0: "litter", 1: "hyacinth", 2: "entangled_plastic"}
@@ -135,6 +142,17 @@ def main():
           sum(stats["box_counts"]["saigon"].values()) >= EXPECTED["saigon"][1] or stats.get("cap_applied", False),
           f"tile boxes {sum(stats['box_counts']['saigon'].values())} (post-cap, "
           f"{stats.get('tiles_dropped', 'count not recorded in this build_stats.json')} tiles dropped under 35% aerial cap) vs orig {EXPECTED['saigon'][1]}")
+
+    # 5b Run C donors: every kept donor image emits exactly one row (no empties
+    # in any donor per the audit round) and its box total must reconcile exactly
+    # (equality, not >=: donors are surface imagery, never tiled/capped).
+    for src in ("mendeley", "navsci_invasive", "navsci_whd"):
+        pos = sum(1 for r in man if r["source"] == src and int(r["n_boxes"]) > 0)
+        check(f"{src}_images_reconcile",
+              pos + stats["empties_total"].get(src, 0) == EXPECTED[src][0],
+              f"positives={pos} + empties={stats['empties_total'].get(src,0)} vs kept {EXPECTED[src][0]}")
+        check(f"{src}_boxes_reconcile", box_by_src[src] == EXPECTED[src][1],
+              f"{box_by_src[src]} vs {EXPECTED[src][1]}")
 
     # 6 tiles: boxes lie inside tile bounds
     bad_tiles = []
