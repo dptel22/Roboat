@@ -10,7 +10,7 @@ Checks:
     navsci_whd 411/417 - kept images / boxes, post-dedupe, polygons dropped);
   6 tiled boxes lie inside their tile (recompute pixel box from tile_info).
 Contact sheets with boxes -> data/exploration_samples/processed/.
-Writes verification_results.csv. --dry-run: checks only, no contact sheets.
+Writes verification_results.csv unless --dry-run is passed; dry-run is fully read-only.
 """
 import argparse
 import csv
@@ -127,6 +127,16 @@ def main():
     pos_fml = sum(1 for r in man if r["source"] == "fml" and int(r["n_boxes"]) > 0)
     check("fml_images_reconcile", pos_fml + stats["empties_total"].get("fml", 0) == EXPECTED["fml"][0],
           f"positives={pos_fml} + empties={stats['empties_total'].get('fml',0)} vs raw 5299")
+
+    # Enforce the builder's pre-background denominator: all train rows except
+    # the later-added FML background negatives.
+    train_rows = [r for r in man if r["split"] == "train"]
+    positive_aerial = [r for r in train_rows if r["source"] in ("hagenbeek", "saigon")
+                       and int(r["n_boxes"]) > 0]
+    cap_denominator = sum(1 for r in train_rows if r["tile_info"] != "background")
+    aerial_share = len(positive_aerial) / max(cap_denominator, 1)
+    check("aerial_train_share_within_35pct_cap", aerial_share <= 0.35 + 1e-12,
+          f"{len(positive_aerial)}/{cap_denominator}={aerial_share:.4%}")
     pos_tud = sum(1 for r in man if r["source"] == "tud_gv" and int(r["n_boxes"]) > 0)
     check("tud_images_reconcile", pos_tud + stats["empties_total"].get("tud_gv", 0) == EXPECTED["tud_gv"][0],
           f"positives={pos_tud} + empties={stats['empties_total'].get('tud_gv',0)} vs raw 1501")
@@ -153,6 +163,28 @@ def main():
               f"positives={pos} + empties={stats['empties_total'].get(src,0)} vs kept {EXPECTED[src][0]}")
         check(f"{src}_boxes_reconcile", box_by_src[src] == EXPECTED[src][1],
               f"{box_by_src[src]} vs {EXPECTED[src][1]}")
+
+    # Regression gate: four raw river_vegetation boxes must stay mapped to
+    # hyacinth (class 1) in the primary two-class tree, with geometry intact.
+    mendeley_repairs = {
+        ("val", "men_FOTO_0140"): (11, "FOTO_0140"),
+        ("val", "men_IMG_6180_frame_00000"): (5, "IMG_6180_frame_00000"),
+        ("test", "men_FOTO_0011"): (1, "FOTO_0011"),
+        ("test", "men_IMG_6190_frame_00005"): (0, "IMG_6190_frame_00005"),
+    }
+    repair_errors = []
+    raw_men = PROC / "donors" / "mendeley" / "extracted" / "Floating Waste and River Vegetation Dataset"
+    for (split, stem), (index, raw_stem) in mendeley_repairs.items():
+        raw_file = raw_men / split / "labels" / f"{raw_stem}.txt"
+        out_file = PROC / "merged2" / "labels" / split / f"{stem}.txt"
+        raw_rows = [line.split() for line in raw_file.read_text().splitlines()]
+        out_rows = [line.split() for line in out_file.read_text().splitlines()]
+        if (len(raw_rows) <= index or len(out_rows) != len(raw_rows)
+                or raw_rows[index][0] != "1" or out_rows[index][0] != "1"
+                or [round(float(v), 6) for v in raw_rows[index][1:]] !=
+                   [round(float(v), 6) for v in out_rows[index][1:]]):
+            repair_errors.append(f"{split}/{stem} box {index}")
+    check("mendeley_river_vegetation_class_mapping", not repair_errors, repair_errors)
 
     # 6 tiles: boxes lie inside tile bounds
     bad_tiles = []
@@ -219,9 +251,10 @@ def main():
         if sai_tiles:
             sheet(rng.sample(sai_tiles, min(6, len(sai_tiles))), "saigon_tiles_contact_sheet.jpg")
 
-    with open(OUT_VERIFY, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["check", "status", "detail"])
-        w.writeheader(); w.writerows(results)
+    if not args.dry_run:
+        with open(OUT_VERIFY, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=["check", "status", "detail"])
+            w.writeheader(); w.writerows(results)
     print("ALL PASS" if ok_all else "FAILURES PRESENT")
     sys.exit(0 if ok_all else 1)
 

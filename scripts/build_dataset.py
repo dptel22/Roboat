@@ -4,7 +4,7 @@ Read-only on data/raw plus the CP2 saigon extraction and the Run C donor
 archives (data/processed/donors). Writes under data/processed/:
   merged2/  PRIMARY 2-class tree: images|labels /{train,val,test}   (0 litter, 1 hyacinth)
   merged3/  ABLATION 3-class tree: images (hardlinks) |labels        (0 litter, 1 hyacinth, 2 entangled_plastic)
-  lists/    per-source val/test txts + combined; train.txt (RFS-expanded), train_base.txt
+  lists/    per-source val/test txts + combined; train.txt and train_base.txt (RFS off by default)
   yamls/    <source>[_<config>].yaml + combined_<config>.yaml  (config c2 default names)
   ood_aquatrash/ (D6) + yaml; manifest.csv; build_stats.json; box_size_stats.csv; rfs_table.csv
   contact sheet of Hagenbeek empty-label images (D9) -> data/exploration_samples/processed/

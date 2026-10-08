@@ -1,0 +1,20 @@
+Run C freeze and correction ledger (UTC date 2026-10-08)
+
+Pre-correction artifact used to identify the existing Kaggle Run C upload/kernel:
+manifest.csv sha256 36a7bd779e88b0962ed1305a118dc3c9af26f039503a968c50714f608d58c5c2 (3,735,814 bytes)
+lists/train.txt sha256 d1712a75b425bd96e089cb4e62f88bcfa78018cd41a260f578ddbc0f620922d0 (1,121,580 bytes)
+lists/train_base.txt sha256 d1712a75b425bd96e089cb4e62f88bcfa78018cd41a260f578ddbc0f620922d0 (1,121,580 bytes)
+lists/val_base.txt sha256 aaebe3e893465b3790adcfb42f35a81c575dbc6179f51a99c1da90f2ee34044f (122,371 bytes)
+lists/test_base.txt sha256 6b398c95c1011ca0b06d81410227eb81b84f93f94fb96c1d926589ca46d61ff6 (134,920 bytes)
+prior kaggle_bundle_v2/roboat-run-c.zip sha256 d754ae90afcf6bfb72cb1f5b11b77ad5b9e896ae89b8ac52582d7f9596419e8b (4,787,216,896 bytes)
+Label-tree hashes below use SHA-256 over sorted relative path + NUL + file bytes + NUL.
+pre-correction merged2/labels: 17,869 files; tree sha256 73d4446070d1d485ef987e65f37f1c440b383ac1232b943fe755cb0b5c654f36
+
+The four confirmed class-ID corrections are logged in scripts/repair_mendeley_label_disagreements.py.
+The manifest and split-list hashes did not change. The corrected merged2 label-tree hash is
+5923d64defc1750ba3c8028b21a411d4f8c1f4a7113ce9b00a80e55435857002 (17,869 files).
+merged3/labels sha256 4191ae995187a2e8a8abaeb0496b6eb5af7b4ace3836e5605edd88e2744c368b (17,869 files; unchanged).
+The rebuilt bundle sha256 is 32747f37c1820d2d06c4a43d77a56d427d13145d3366797decdb0f948fdeab79
+(4,787,216,974 bytes). The Kaggle version request was submitted after staging all dataset files;
+verify the published version number and a corrected remote label before treating it as live.
+The already-running kernel predates these corrections and continues to use its existing mount.

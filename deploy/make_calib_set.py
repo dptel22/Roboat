@@ -12,7 +12,6 @@ import csv
 import random
 from collections import Counter
 from pathlib import Path
-import shutil
 
 SEED = 42
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +34,33 @@ def _fixed_out(root: Path, name: str) -> Path:
 
 OUT_CALIB_MANIFEST = _fixed_out(CALIB, "calib_manifest.csv")
 
+
+def allocate_exact(total, capacities):
+    """Proportional largest-remainder allocation, capped by source capacity."""
+    keys = sorted(capacities)
+    allocation = {key: 0 for key in keys}
+    remaining = min(total, sum(capacities.values()))
+    while remaining:
+        active = [key for key in keys if allocation[key] < capacities[key]]
+        if not active:
+            break
+        weight = sum(capacities[key] for key in active)
+        quotas = {key: remaining * capacities[key] / weight for key in active}
+        floors = {key: min(capacities[key] - allocation[key], int(quotas[key]))
+                  for key in active}
+        placed = sum(floors.values())
+        for key, value in floors.items():
+            allocation[key] += value
+        remaining -= placed
+        if not remaining:
+            break
+        order = sorted(active, key=lambda key: (-(quotas[key] - int(quotas[key])), key))
+        for key in order:
+            if remaining and allocation[key] < capacities[key]:
+                allocation[key] += 1
+                remaining -= 1
+    return allocation
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=1024)
@@ -50,23 +76,26 @@ def main():
 
     n_hy = min(len(hy), max(int(args.min_hyacinth_share * args.n), 1))
     n_rest = args.n - n_hy
-    per_src = Counter(r["source"] for r in rest)
     picks = rng.sample(hy, n_hy)
-    # proportional across sources for the remainder
-    for src, cnt in per_src.items():
+    # Largest-remainder allocation avoids losing samples to independent rounding.
+    per_src = Counter(r["source"] for r in rest)
+    allocation = allocate_exact(n_rest, per_src)
+    for src, k in allocation.items():
         pool = [r for r in rest if r["source"] == src]
-        k = round(n_rest * cnt / len(rest))
         picks += rng.sample(pool, min(k, len(pool)))
     rng.shuffle(picks)
 
     counts = Counter(r["source"] for r in picks)
     hy_share = n_hy / len(picks)
     print(f"picked {len(picks)}: {dict(counts)}, hyacinth share {hy_share:.2f}")
+    if len(picks) != args.n:
+        raise SystemExit(f"could select only {len(picks)} of requested {args.n} calibration images")
     if args.dry_run:
         return
     (CALIB / "images").mkdir(parents=True, exist_ok=True)
-    shutil.rmtree(CALIB, ignore_errors=True)
-    (CALIB / "images").mkdir(parents=True, exist_ok=True)
+    # Replace only generated image files; preserve any unrelated files in calib/.
+    for old in (CALIB / "images").glob("*.jpg"):
+        old.unlink()
     for r in picks:
         src = PROC / "merged2" / "images" / "train" / f"{r['final_stem']}.jpg"
         dst = CALIB / "images" / f"{r['final_stem']}.jpg"

@@ -113,10 +113,9 @@ def main():
         tile_drops = precap_pos_tiles["train"] - man_pos_tiles["train"]
 
         # cap-replay inputs (combined replay printed after both sources)
-        fml_pos_train = sum(1 for r in man if r["source"] == "fml" and int(r["n_boxes"]) > 0 and r["split"] == "train")
-        tud_train = sum(1 for r in man if r["source"] == "tud_gv" and r["split"] == "train")
         aerial_train_tiles_precap = precap_pos_tiles["train"] + man_empty_tiles["train"]
-        n_train_before = fml_pos_train + tud_train + aerial_train_tiles_precap
+        n_train_before = sum(1 for r in man if r["split"] == "train"
+                             and r["tile_info"] != "background")
 
         print(f"=== {source} ===")
         print(f"raw boxes                        : {raw_total:>7,}")
@@ -142,7 +141,7 @@ def main():
                and dup_check == overlap_gain)
         print(f"TIE-OUT (raw-drop+gain-cap == final == manifest): {'PASS' if tie else 'FAIL'}")
         print(f"cap replay inputs: n_train_before={n_train_before:,} "
-              f"(non-aerial {fml_pos_train + tud_train:,} + aerial tiles {aerial_train_tiles_precap:,})")
+              f"(all non-background train rows; includes every donor and aerial empties)")
         print()
         # stash for combined replay
         globals().setdefault("per_source", {})[source] = {
@@ -150,25 +149,26 @@ def main():
 
     # combined aerial-cap replay (as in build_dataset.py lines 238-257)
     ps = globals()["per_source"]
-    fml_pos_train = sum(1 for r in man if r["source"] == "fml" and int(r["n_boxes"]) > 0 and r["split"] == "train")
-    tud_train = sum(1 for r in man if r["source"] == "tud_gv" and r["split"] == "train")
     pool = sum(v["pos_train_precap"] for v in ps.values())
-    n_train_before = fml_pos_train + tud_train + pool + sum(v["empty_train"] for v in ps.values())
+    n_train_before = sum(1 for r in man if r["split"] == "train"
+                         and r["tile_info"] != "background")
     n_non_aerial = n_train_before - pool
     target = int(0.35 * n_non_aerial / 0.65)
     n_drop = max(0, pool - target)
     print("=== combined aerial cap replay (D4) ===")
     print(f"aerial pool pre-cap (pos train tiles): {pool:,}")
-    print(f"n_train_before={n_train_before:,}  n_non_aerial={n_non_aerial:,}")
+    print(f"n_train_before={n_train_before:,} (includes all non-background donor rows and aerial empties)  "
+          f"n_non_aerial={n_non_aerial:,}")
     print(f"target = int(0.35*{n_non_aerial:,}/0.65) = {target:,}  ->  n_drop = {n_drop:,}")
     final_pos_train = sum(
         1 for r in man if r["source"] in ("hagenbeek", "saigon") and int(r["n_boxes"]) > 0 and r["split"] == "train")
     post_cap_train = n_train_before - n_drop
+    final_train_count = sum(1 for r in man if r["split"] == "train")
     print(f"actual positive aerial train tiles in manifest: {final_pos_train:,} "
           f"(=> actual drops {pool - final_pos_train:,})")
     print(f"post-cap pre-background share: {final_pos_train:,}/{post_cap_train:,} = "
           f"{final_pos_train / post_cap_train:.4%}  (final train incl. bg: "
-          f"{final_pos_train:,}/7,368 = {final_pos_train / 7368:.4%})")
+          f"{final_pos_train:,}/{final_train_count:,} = {final_pos_train / final_train_count:.4%})")
 
 
 if __name__ == "__main__":

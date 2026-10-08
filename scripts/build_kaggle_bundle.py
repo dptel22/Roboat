@@ -7,8 +7,7 @@ expects at --data-root: it globs <data_root>/lists/*.txt and
 the data root):
   merged2/                        images+labels for train/val/test (PRIMARY
                                   2-class tree)
-  lists/                          *.txt (train.txt is the RFS-expanded
-                                  27,751-line list)
+  lists/                          *.txt (train.txt is 14,507 lines; RFS is off)
   yamls/                          *.yaml (per-source + combined, c2 and c3)
   ood_aquatrash/                  eval-only AquaTrash OOD tree (369 images +
                                   369 labels, flat images/ + labels/ - no
@@ -36,12 +35,12 @@ the Kaggle mount needs. (A symlink-preserving format would NOT work on Kaggle;
 that is why the trees are hardlinked rather than symlinked.)
 
 Sanity assertions gate the zip (all read-only):
-  - merged2 holds 17,868 images AND 17,868 labels (14,505/1,589/1,774 per
+  - merged2 holds 17,869 images AND 17,869 labels (14,507/1,590/1,772 per
     split; Run C dataset with the Mendeley + Navsci donors), with identical
     stem sets per split;
   - ood_aquatrash holds 369 images AND 369 labels with identical stem sets;
   - every yaml in yamls/ parses and carries nc + names;
-  - lists/train.txt has exactly 27,751 non-empty lines;
+  - lists/train.txt has exactly 14,507 non-empty lines (RFS off);
   - extra guard: every merged2 and ood_aquatrash entry in the resolved lists
     exists on disk.
 
@@ -81,8 +80,9 @@ BUNDLE_DIRS = {
 }
 README_NAME = "BUNDLE_README.txt"
 
-EXPECTED_IMAGES = 17_869  # 14,505 train + 1,589 val + 1,774 test (Run C verifier)
+EXPECTED_IMAGES = 17_869  # 14,507 train + 1,590 val + 1,772 test (Run C verifier)
 EXPECTED_PER_SPLIT = {"train": 14_507, "val": 1_590, "test": 1_772}
+EXPECTED_BOXES_BY_CLASS = {0: 37_982, 1: 11_712}
 EXPECTED_OOD = 369  # eval-only AquaTrash OOD tree (images == labels)
 EXPECTED_TRAIN_LINES = 14_507  # train_base lines; RFS OFF for Run C (D7 override, --rfs re-enables)
 
@@ -98,7 +98,7 @@ LISTS_RESOLVE = ["train.txt", "train_base.txt", "val_base.txt", "test_base.txt",
 README_TEXT = f"""RoBoat Kaggle dataset bundle
 ============================
 Built by scripts/build_kaggle_bundle.py from data/processed (Run C dataset,
-2026-10-06 rebuild; verifier ALL PASS incl. donor reconciliations).
+2026-10-08 rebuild; verification performed against this build).
 2 classes: 0 litter, 1 hyacinth. Run C adds the CC BY 4.0 donors
 Mendeley j26w4m645z.2 (floating_waste->litter, river_vegetation->hyacinth)
 and Navsci invasive-aquatic-plants v12 / water-hyacinth-detection v1
@@ -110,8 +110,8 @@ are NOT comparable to runs trained on this bundle.
 Contents (top level = the Kaggle dataset mount root, i.e. --data-root):
   merged2/images/{{train,val,test}}  +  merged2/labels/{{train,val,test}}
       {EXPECTED_PER_SPLIT['train']:,} / {EXPECTED_PER_SPLIT['val']} / {EXPECTED_PER_SPLIT['test']:,} images
-  lists/*.txt   train.txt is the RFS-expanded {EXPECTED_TRAIN_LINES:,}-line training list
-                (train_base.txt is the un-expanded {EXPECTED_PER_SPLIT['train']:,}-image base)
+      49,694 boxes: 37,982 litter + 11,712 hyacinth
+  lists/*.txt   train.txt and train_base.txt each contain {EXPECTED_TRAIN_LINES:,} lines; RFS is OFF
   yamls/*.yaml  per-source (fml, tud_gv, hagenbeek_tiles, saigon_tiles,
                 mendeley, navsci_invasive, navsci_whd, ood_aquatrash) +
                 combined; *_c2.yaml = primary 2-class, *_c3.yaml = ablation
@@ -122,20 +122,22 @@ Contents (top level = the Kaggle dataset mount root, i.e. --data-root):
                 Zenodo Model_* checkpoints converted by
                 scripts/convert_zenodo_weights.py (Run B --pretrained)
 
-Mount-path convention (what kaggle/train_baseline.py rebase() expects):
+Mount-path convention (what the paired Kaggle kernels' rebase() expects):
 the lists and yamls carry repo-absolute "data/processed/..." entries;
 rebase() rewrites whatever follows "data/processed/" onto --data-root.
 So --data-root must be the directory that DIRECTLY contains merged2/,
-lists/, yamls/, ood_aquatrash/ and zenodo_12800597/converted/ - e.g. upload
-this zip as a private Kaggle Dataset named "roboat-processed", which mounts
-at /kaggle/input/roboat-processed.
+lists/, yamls/, ood_aquatrash/ and zenodo_12800597/converted/. The private
+Kaggle dataset slug is dptel22/roboat-run-c and mounts at
+/kaggle/input/roboat-run-c.
 
-Launch (GPU T4 x2 or P100, imgsz=960 per the D11 box-size audit):
-  pip install -q ultralytics
-  python train_baseline.py --data-root /kaggle/input/roboat-processed
-Run B (Zenodo Model_tiles init, yolov8n leg only - see kaggle/RUN_PLAN.md):
-  python train_baseline.py --data-root /kaggle/input/roboat-processed \\
-      --pretrained /kaggle/input/roboat-processed/zenodo_12800597/converted/Model_tiles_weights_converted.pt
+Paired Run C kernels (same dataset, split lists, YOLOv8n and settings):
+  run-c-control: COCO initialization (yolov8n.pt)
+  run-c-zenodo-init: converted Model_tiles initialization at
+      /kaggle/input/roboat-run-c/zenodo_12800597/converted/Model_tiles_weights_converted.pt
+Both kernels use epochs=100, patience=20, imgsz=960, seed=42, deterministic
+training, and source validation splits. They write separate outputs under
+/kaggle/working/roboat/. Reserve test and AquaTrash OOD results for the final
+evaluation after choosing a checkpoint.
 
 Caveats:
   - ood_aquatrash.yaml evaluates only class 0 (litter; nc=1) against the
@@ -191,8 +193,18 @@ def sanity_checks(bundle: dict) -> dict:
         n_lab += len(labs)
     assert n_img == EXPECTED_IMAGES, f"images {n_img} != {EXPECTED_IMAGES}"
     assert n_lab == EXPECTED_IMAGES, f"labels {n_lab} != {EXPECTED_IMAGES}"
+    box_counts = {0: 0, 1: 0}
+    for label_file in (PROC / "merged2" / "labels").rglob("*.txt"):
+        for line in label_file.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                class_id = int(line.split()[0])
+                assert class_id in box_counts, f"unexpected class {class_id} in {label_file}"
+                box_counts[class_id] += 1
+    assert box_counts == EXPECTED_BOXES_BY_CLASS, (
+        f"class box counts {box_counts} != {EXPECTED_BOXES_BY_CLASS}")
     report["images"] = n_img
     report["labels"] = n_lab
+    report["boxes_by_class"] = box_counts
 
     # 1b. ood_aquatrash eval-only tree: 369 images + 369 labels, flat
     ood_imgs = sorted((PROC / "ood_aquatrash" / "images").glob("*.jpg"))
