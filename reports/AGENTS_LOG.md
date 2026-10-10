@@ -266,3 +266,23 @@ implemented, plus path/label/citation inconsistencies. Fixes:
   (report: data/processed/embedding_leakage_report.json); Mendeley river-vegetation
   -> hyacinth mapping is the operational mat class (species-mixed by definition);
   donor train-split label noise not yet reviewed (val/test done first per priority).
+
+## 2026-10-08 — main (Run C training launched on Kaggle)
+
+- **main**: Run C bundle built (4.5 GB zip, 36,524 files, all sanity assertions
+  passed) and uploaded as the NEW private dataset `dptel22/roboat-run-c` (the CP4
+  `roboat-processed` dataset untouched). First upload stalled at 64% — killed and
+  relaunched; second attempt completed.
+- **main**: Two training kernels pushed and RUNNING:
+  `dptel22/run-c-control` (yolov8n + yolo11n legs, COCO init) and
+  `dptel22/run-c-zenodo-init` (Model_tiles init, yolov8n leg). v1/v2 pushes
+  failed to attach the dataset (pushed while Kaggle was still processing it;
+  one 409 title-slug mismatch fixed by id `run-c-zenodo-init`); the final
+  versions landed clean with the dataset attached — verified
+  KernelWorkerStatus.RUNNING for both.
+- **main**: kernel scripts (kaggle/kernels/*) generated from the committed
+  train pipeline + pinned ultralytics 8.4.165 install; P1 gate eval and resume
+  guards included. colab-mcp config staged at docs/colab-mcp.json (Google OAuth
+  = user step). Kaggle plugin (shepsci marketplace, kaggle 3.0.1) manually
+  registered in the ZCode plugin registry pending app restart;
+  logos-42/mlops-pipeline does not exist on GitHub (404) — not installed.
