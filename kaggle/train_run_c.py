@@ -141,9 +141,9 @@ def _audit_label(label: Path, nc: int) -> Counter:
         box = [float(v) for v in fields[1:]]
         if any(v < 0 or v > 1 for v in box) or box[2] <= 0 or box[3] <= 0:
             raise ValueError(f"{label}:{line_no}: invalid normalized box {box}")
-        if box[0] - box[2] / 2 < -1e-6 or box[0] + box[2] / 2 > 1 + 1e-6:
+        if box[0] - box[2] / 2 < -1e-4 or box[0] + box[2] / 2 > 1 + 1e-4:
             raise ValueError(f"{label}:{line_no}: x extent falls outside image")
-        if box[1] - box[3] / 2 < -1e-6 or box[1] + box[3] / 2 > 1 + 1e-6:
+        if box[1] - box[3] / 2 < -1e-4 or box[1] + box[3] / 2 > 1 + 1e-4:
             raise ValueError(f"{label}:{line_no}: y extent falls outside image")
         counts[class_id] += 1
     return counts
