@@ -94,7 +94,7 @@ dataset) remains the Run A/B artifact. **Run A/B numbers are NOT comparable to
 Run C**: the train/val/test sets, the RFS decision and the aerial-cap outcome
 all change.
 
-Verified Run C dataset (verifier ALL PASS, 24 checks, 2026-10-06):
+Verified Run C dataset (verifier ALL PASS, 23 checks, 2026-10-06):
 
 - 17,869 images (train 14,507 / val 1,590 / test 1,772), 49,694 boxes
   (litter(0) 37,986 / hyacinth(1) 11,708; per split: train 29,828+9,858,
@@ -103,8 +103,9 @@ Verified Run C dataset (verifier ALL PASS, 24 checks, 2026-10-06):
   first-seen; 762 navsci_invasive segmentation-polygon label files DROPPED,
   not converted): Mendeley j26w4m645z.2 -> 947 imgs / 4,176 boxes (own split
   honored: 665/179/103 — every group sits in exactly one donor split);
-  Navsci invasive-aquatic-plants v12 -> 4,693 imgs / 4,693 boxes; Navsci
-  water-hyacinth-detection v1 -> 411 imgs / 417 boxes. The two Navsci donors
+  Navsci invasive-aquatic-plants v12 -> 4,521 imgs / 4,521 boxes (post
+  pHash dedupe; 5,815 raw before dedupe and polygon-label drops); Navsci
+  water-hyacinth-detection v1 -> 584 imgs / 590 boxes. The two Navsci donors
   share one group per original image (rf-hash-stripped stem, case-insensitive)
   and are split-assigned JOINTLY (0.8/0.1/0.1 group-level) so the 371
   shared-source photos still present in both donors cannot leak across splits.
@@ -134,12 +135,26 @@ Verified Run C dataset (verifier ALL PASS, 24 checks, 2026-10-06):
 - **Background negatives**: the D8 background budget scales with train size
   (`budget = int(0.10 * n_train)`), so it grew 701 → 1,381 with the donors and
   the emitted fml background tiles went 350 → 690 (+340; `bg_used` in
-  build_stats.json). Reconciliation: 9,428 (CP4) + 6,051 donors + 2,049
-  retained saigon train tiles + 340 extra background = 17,868.
+  build_stats.json). Reconciliation: 9,428 (CP4) + 6,052 donors
+  (mendeley 947 + navsci_invasive 4,521 + navsci_whd 584) + 2,049
+  retained saigon train tiles + 340 extra background = 17,869.
 - Launch commands are unchanged (`kaggle/train_baseline.py --data-root ...`);
   per-source eval gained `mendeley_c2`, `navsci_invasive_c2`, `navsci_whd_c2`
   yamls. If Run C is uploaded, build a NEW versioned Kaggle dataset (do not
   overwrite the CP4 `roboat-processed` archive Run A/B train from).
+- **Augmentation-enabled Run C entry points**: use
+  `kaggle/run_c_training.ipynb` (self-contained Kaggle notebook) or
+  `kaggle/train_run_c.py` (CLI). These supersede the earlier paired Run C
+  kernels for new training. Both COCO-control and Zenodo-init use the same
+  pinned Albumentations 2.0.8 photometric transforms (mild glare, fog, rain,
+  shadows, exposure, and motion blur) plus native YOLO transforms. Geometric
+  crops are intentionally excluded to protect the smallest boxes; the native
+  scale range is set to 0.2. Build and upload a fresh Run C bundle because the
+  training audit now requires `audit/manifest.csv` for independent group-split
+  verification. The training mode uses only combined validation for checkpoint
+  selection; run `--mode evaluate` after both arms are complete for the
+  per-source test and AquaTrash OOD report. Keep those final metrics out of
+  further tuning.
 - **Baselines for Run C (a lone Run C mAP proves nothing)**: train at least the
   COCO-init control on the SAME Run C data (`train_baseline.py` default legs =
   Run C-control), and report metrics **per donor** (`mendeley_c2`,
@@ -156,9 +171,12 @@ Run C's un-RFS'd train list is 14,507 images at imgsz 960 on a T4 ≈
 free Colab session (~12 h) and a single Kaggle GPU session (~9–12 h): plan
 **~3–4 free sessions per run with resume**, or use Kaggle's ~30 GPU-h/week.
 
-Resume, don't restart — `deterministic=True` + `resume=True` restores the RNG
-state, so a resumed run continues the same augmentation/schedule sequence as
-an uninterrupted one:
+Resume, don't restart — `deterministic=True` + `resume=True` restores model,
+optimizer and epoch state cleanly, but the dataloader RNG stream (shuffle
+order + augmentation sampling) resets at each session boundary, so a resumed
+run does NOT replay the identical augmentation sequence an uninterrupted run
+would have seen (acceptable; just don't compare per-epoch curves
+bit-for-bit):
 
 - **Colab** (`training/colab_train.ipynb`): runs write to Drive
   (`project=/content/drive/MyDrive/roboat_runs`), so `last.pt` survives the

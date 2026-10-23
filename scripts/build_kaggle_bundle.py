@@ -20,6 +20,8 @@ the data root):
                                   Model_tiles_weights_converted.pt, see
                                   kaggle/RUN_PLAN.md) - the same nested path
                                   kaggle/README.md §1 documents
+  audit/manifest.csv              source, split and group IDs for the Run C
+                                  Kaggle preflight's group-leakage audit
   BUNDLE_README.txt               mount-path convention + launch commands
 
 ood_aquatrash note: the AquaTrash OOD tree IS bundled (369 images + 369
@@ -53,6 +55,7 @@ Run A/B archive data/processed/kaggle_bundle/roboat-processed.zip (2026-10-02)
 can no longer be clobbered by a default or misdirected invocation.
 """
 import argparse
+import csv
 import zipfile
 from pathlib import Path
 
@@ -112,6 +115,7 @@ Contents (top level = the Kaggle dataset mount root, i.e. --data-root):
       {EXPECTED_PER_SPLIT['train']:,} / {EXPECTED_PER_SPLIT['val']} / {EXPECTED_PER_SPLIT['test']:,} images
       49,694 boxes: 37,982 litter + 11,712 hyacinth
   lists/*.txt   train.txt and train_base.txt each contain {EXPECTED_TRAIN_LINES:,} lines; RFS is OFF
+  audit/manifest.csv  source, group, split and final-stem map used by the training preflight
   yamls/*.yaml  per-source (fml, tud_gv, hagenbeek_tiles, saigon_tiles,
                 mendeley, navsci_invasive, navsci_whd, ood_aquatrash) +
                 combined; *_c2.yaml = primary 2-class, *_c3.yaml = ablation
@@ -130,14 +134,16 @@ lists/, yamls/, ood_aquatrash/ and zenodo_12800597/converted/. The private
 Kaggle dataset slug is dptel22/roboat-run-c and mounts at
 /kaggle/input/roboat-run-c.
 
-Paired Run C kernels (same dataset, split lists, YOLOv8n and settings):
-  run-c-control: COCO initialization (yolov8n.pt)
-  run-c-zenodo-init: converted Model_tiles initialization at
-      /kaggle/input/roboat-run-c/zenodo_12800597/converted/Model_tiles_weights_converted.pt
-Both kernels use epochs=100, patience=20, imgsz=960, seed=42, deterministic
-training, and source validation splits. They write separate outputs under
-/kaggle/working/roboat/. Reserve test and AquaTrash OOD results for the final
-evaluation after choosing a checkpoint.
+Run C training entry points:
+  kaggle/run_c_training.ipynb is the self-contained Kaggle notebook.
+  kaggle/train_run_c.py is its matching CLI script.
+Both COCO-control and Zenodo-init arms use the same low-probability lake/weather
+photometric augmentations and the locked seed/epoch/image-size settings. The
+preflight checks this manifest's source groups, image hashes, labels, class
+mapping, and per-source split membership before training. Training selects a
+checkpoint with combined validation only. Run the separate final-evaluation
+cell after both arms are complete; it evaluates per-source test and AquaTrash
+OOD once and saves final_test_results.json. Do not tune against those results.
 
 Caveats:
   - ood_aquatrash.yaml evaluates only class 0 (litter; nc=1) against the
@@ -147,6 +153,8 @@ Caveats:
     primary runs use the *_c2.yaml files.
   - The dataset trees use hardlinks; this zip stored each hardlink as a real,
     independent copy of the file contents (kaggle/README.md section 1).
+  - audit/manifest.csv is used only by the training preflight for group-split
+    verification; keep the Kaggle dataset private with the image data.
   - The val split is same-site; the Bengaluru Capture Set (T9) is the real test.
   - Contains licensed research data (TUD-GV, FML v2, Hagenbeek; Run C donors
     Mendeley j26w4m645z.2 + Navsci invasive-aquatic-plants /
@@ -171,6 +179,10 @@ def collect_bundle_files() -> dict:
         files = sorted(p for p in src_dir.rglob("*") if p.is_file())
         bundle[top] = [(p, f"{top}/{p.relative_to(src_dir).as_posix()}")
                        for p in files]
+    manifest = PROC / "manifest.csv"
+    if not manifest.is_file():
+        raise SystemExit(f"missing required group-audit manifest: {manifest}")
+    bundle["audit/manifest.csv"] = [(manifest, "audit/manifest.csv")]
     return bundle
 
 
@@ -251,6 +263,32 @@ def sanity_checks(bundle: dict) -> dict:
     # the converted Run B checkpoint must be present in the bundle, at the
     # nested path RUN_PLAN.md documents for --pretrained
     arcnames = {a for files in bundle.values() for _, a in files}
+    assert "audit/manifest.csv" in arcnames, \
+        "audit/manifest.csv missing (Run C group audit cannot run on Kaggle)"
+    with (PROC / "manifest.csv").open(encoding="utf-8", newline="") as stream:
+        manifest_rows = list(csv.DictReader(stream))
+    required_manifest = {"source", "group_id", "split", "final_stem"}
+    assert manifest_rows and required_manifest <= set(manifest_rows[0]), \
+        "manifest.csv must include source, group_id, split and final_stem"
+    group_splits = {}
+    global_group_splits = {}
+    stem_splits = {}
+    manifest_split_counts = {split: 0 for split in EXPECTED_PER_SPLIT}
+    for row in manifest_rows:
+        split = row["split"]
+        assert split in manifest_split_counts, f"unexpected manifest split: {split}"
+        manifest_split_counts[split] += 1
+        group_splits.setdefault((row["source"], row["group_id"]), set()).add(split)
+        global_group_splits.setdefault(row["group_id"], set()).add(split)
+        stem_splits.setdefault(row["final_stem"], set()).add(split)
+    assert manifest_split_counts == EXPECTED_PER_SPLIT, \
+        f"manifest split counts {manifest_split_counts} != {EXPECTED_PER_SPLIT}"
+    assert not [key for key, splits in group_splits.items() if len(splits) > 1], \
+        "manifest has source groups crossing train/val/test"
+    assert not [key for key, splits in global_group_splits.items() if len(splits) > 1], \
+        "manifest has shared groups crossing train/val/test"
+    assert not [key for key, splits in stem_splits.items() if len(splits) > 1], \
+        "manifest has final image stems crossing train/val/test"
     assert "zenodo_12800597/converted/Model_tiles_weights_converted.pt" in arcnames, \
         "Run B checkpoint missing from zenodo_12800597/converted/"
     # the OOD tree + its yaml/txt must ship now (D6 benchmark evaluability)
