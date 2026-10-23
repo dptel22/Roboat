@@ -1,0 +1,17 @@
+{
+  "id": "dptel22/roboat-run-c-training",
+  "title": "roboat run c training",
+  "code_file": "run_c_training.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "dataset_sources": [
+    "dptel22/roboat-run-c"
+  ],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}
