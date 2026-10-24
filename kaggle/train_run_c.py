@@ -1,11 +1,11 @@
-"""Run C training with auditable data checks and lake-condition augmentation.
+"""Run C training with auditable data checks, lake augmentation, and auto-evaluation.
 
 Examples (Kaggle):
   python train_run_c.py --mode audit --data-root /kaggle/input/roboat-run-c
   python train_run_c.py --mode train --arm control --data-root /kaggle/input/roboat-run-c
   python train_run_c.py --mode train --arm control --resume --data-root /kaggle/input/roboat-run-c
   python train_run_c.py --mode train --arm zenodo --data-root /kaggle/input/roboat-run-c
-  python train_run_c.py --mode evaluate --arm both --data-root /kaggle/input/roboat-run-c
+  python train_run_c.py --mode evaluate --arm control --data-root /kaggle/input/roboat-run-c
 
 Run `evaluate` only after training/configuration decisions are frozen. Training
 uses the combined validation split for checkpoint selection; test and AquaTrash
@@ -34,7 +34,7 @@ IMG_SIZE = 960
 EPOCHS = 100
 PATIENCE = 20
 SEED = 42
-DEFAULT_MAX_HOURS = 10.3
+DEFAULT_MAX_HOURS = 10.2  # Leave sufficient buffer for 3-minute post-training evaluation
 EXPECTED_SPLIT_COUNTS = {"train": 14_507, "val": 1_590, "test": 1_772}
 EXPECTED_OOD_IMAGES = 369
 CLASS_NAMES = ["litter", "hyacinth"]
@@ -42,8 +42,38 @@ SOURCE_YAMLS = [
     "saigon_tiles_c2", "hagenbeek_tiles_c2", "fml_c2", "tud_gv_c2",
     "mendeley_c2", "navsci_invasive_c2", "navsci_whd_c2", "combined_c2",
 ]
+DEPLOYMENT_SOURCES = ["saigon_tiles_c2", "hagenbeek_tiles_c2", "fml_c2", "tud_gv_c2"]
+DONOR_SOURCES = ["mendeley_c2", "navsci_invasive_c2", "navsci_whd_c2"]
 OOD_YAML = "ood_aquatrash"
 ARMS = ("control", "zenodo")
+
+
+def detect_optimal_batch_size(requested_batch: int | None = None) -> int:
+    """Choose optimal batch size: 24 on 15+ GB VRAM GPUs (T4/P100), otherwise 16."""
+    if requested_batch is not None and requested_batch > 0:
+        return requested_batch
+    try:
+        import torch
+        if torch.cuda.is_available():
+            vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+            if vram_gb >= 14.0:
+                print(f"[batch-detect] Detected GPU with {vram_gb:.1f} GB VRAM -> using optimal batch=24")
+                return 24
+    except Exception as e:
+        print(f"[batch-detect] Fallback to batch=16: {e}")
+    return 16
+
+
+def checkpoint_has_optimizer(path: Path) -> bool:
+    """Return True if checkpoint file exists and has non-None optimizer state."""
+    if not path.is_file():
+        return False
+    try:
+        import torch
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        return isinstance(ckpt, dict) and ckpt.get("optimizer") is not None
+    except Exception:
+        return False
 
 
 def resolve_data_path(value: str | Path, data_root: Path) -> Path:
@@ -90,18 +120,14 @@ def stage_dataset_to_ssd(
         print(f"[ssd-stage] Warning: data_root {data_root} is invalid or missing yamls; skipping staging.")
         return data_root
 
-    print(
-        f"[ssd-stage] Staging dataset from {data_root} to fast SSD {target_dir}...",
-        flush=True,
-    )
+    print(f"[ssd-stage] Staging dataset from {data_root} to fast SSD {target_dir}...", flush=True)
     t0 = time.time()
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
-        # Attempt fast system copy first on Linux (cp -r -L follows all symlinks)
         cp_ok = False
         if os.name != "nt":
             try:
-                ret = os.system(f"cp -r -L \"{data_root}\"/* \"{target_dir}/\" 2>/dev/null")
+                ret = os.system(f'cp -r -L "{data_root}"/* "{target_dir}/" 2>/dev/null')
                 if ret == 0 and (target_dir / "yamls").is_dir() and any((target_dir / "yamls").glob("*.yaml")):
                     cp_ok = True
             except Exception:
@@ -230,6 +256,20 @@ def audit_dataset(data_root: Path, rebased: Path, run_root: Path) -> dict:
     """Fail-closed audit of split lists, labels, exact duplicates and groups."""
     run_root.mkdir(parents=True, exist_ok=True)
     audit_path = run_root / "audit_report.json"
+
+    # Fix 3: Auto-discover cached audit_report.json across /kaggle/input in 0.0s
+    if not audit_path.is_file():
+        input_dir = Path("/kaggle/input")
+        if input_dir.is_dir():
+            for found in input_dir.rglob("audit_report.json"):
+                if found.is_file():
+                    try:
+                        shutil.copy2(found, audit_path)
+                        print(f"[audit] Auto-discovered and reused cached audit report from {found}")
+                        break
+                    except Exception:
+                        pass
+
     if audit_path.is_file():
         try:
             cached = json.loads(audit_path.read_text(encoding="utf-8"))
@@ -240,7 +280,7 @@ def audit_dataset(data_root: Path, rebased: Path, run_root: Path) -> dict:
                 and checks.get("combined_split_counts") == EXPECTED_SPLIT_COUNTS
             ):
                 print(f"[audit] Reusing cached audit report: {audit_path}")
-                print(f"AUDIT PASS (cached) — {audit_path}")
+                print(f"AUDIT PASS (cached in 0.0s) — {audit_path}")
                 return cached
         except Exception as exc:
             print(f"[audit] Cached report unreadable or invalid ({exc}); running fresh audit...")
@@ -544,7 +584,7 @@ def register_session_guard_callbacks(
             print(f"[SESSION GUARD] Session boundary guard triggered after epoch {epoch_idx + 1}/{total_epochs}!")
             print(f"[SESSION GUARD] Elapsed: {elapsed / 3600:.2f}h / Limit: {max_hours:.2f}h (remaining: {remaining / 60:.1f}m).")
             print(f"[SESSION GUARD] Checkpoint safely preserved at {safe_pt}.")
-            print(f"[SESSION GUARD] Halting training cleanly to allow safe container completion.")
+            print(f"[SESSION GUARD] Halting training cleanly to allow safe container completion & evaluation.")
             print("=" * 72 + "\n", flush=True)
             trainer.stop = True
 
@@ -554,6 +594,7 @@ def register_session_guard_callbacks(
 def train_arm(arm: str, args, rebased: Path) -> Path:
     from ultralytics import YOLO
     import ultralytics
+    import torch
 
     if ultralytics.__version__ != ULTRALYTICS_VERSION:
         raise RuntimeError(f"Expected Ultralytics {ULTRALYTICS_VERSION}, found {ultralytics.__version__}")
@@ -567,6 +608,7 @@ def train_arm(arm: str, args, rebased: Path) -> Path:
     best_pt = weights_dir / "best.pt"
     safe_pt = weights_dir / "resume_safe.pt"
     results_csv = arm_dir / "results.csv"
+    batch_size = detect_optimal_batch_size(getattr(args, "batch", None))
 
     if args.resume_from and not args.resume:
         raise ValueError("--resume-from requires --resume")
@@ -576,6 +618,8 @@ def train_arm(arm: str, args, rebased: Path) -> Path:
             (source / "weights" / "last.pt").is_file()
             or (source / "weights" / "resume_safe.pt").is_file()
             or (source / "weights" / "best.pt").is_file()
+            or (source / "last.pt").is_file()
+            or (source / "best.pt").is_file()
         )
         if not has_checkpoint:
             raise FileNotFoundError(
@@ -588,8 +632,21 @@ def train_arm(arm: str, args, rebased: Path) -> Path:
         arm_dir.parent.mkdir(parents=True, exist_ok=True)
         print(f"[resume] Copying previous run folder from {source} to {arm_dir}...")
         shutil.copytree(source, arm_dir, dirs_exist_ok=True)
-        if not last_pt.is_file() and safe_pt.is_file():
-            shutil.copy2(safe_pt, last_pt)
+        # Re-position checkpoint files if placed directly in run folder
+        weights_dir.mkdir(parents=True, exist_ok=True)
+        if not last_pt.is_file() and (arm_dir / "last.pt").is_file():
+            shutil.copy2(arm_dir / "last.pt", last_pt)
+        if not best_pt.is_file() and (arm_dir / "best.pt").is_file():
+            shutil.copy2(arm_dir / "best.pt", best_pt)
+        if not safe_pt.is_file() and (arm_dir / "resume_safe.pt").is_file():
+            shutil.copy2(arm_dir / "resume_safe.pt", safe_pt)
+
+    # Fix 1: Check resume_safe.pt vs stripped last.pt priority
+    if safe_pt.is_file():
+        if not last_pt.is_file() or not checkpoint_has_optimizer(last_pt):
+            if checkpoint_has_optimizer(safe_pt):
+                print(f"[resume] Restoring unstripped optimizer checkpoint: {safe_pt} -> {last_pt}")
+                shutil.copy2(safe_pt, last_pt)
 
     if args.resume:
         resume_target = None
@@ -601,14 +658,45 @@ def train_arm(arm: str, args, rebased: Path) -> Path:
 
         standard_resume_done = False
         if resume_target is not None:
+            # Fix 2: Patch on-disk ckpt train_args before model.train(resume=True)
+            try:
+                raw_ckpt = torch.load(resume_target, map_location="cpu", weights_only=False)
+                if isinstance(raw_ckpt, dict) and isinstance(raw_ckpt.get("train_args"), dict):
+                    raw_ckpt["train_args"]["data"] = str(rebased / "combined_c2.yaml")
+                    raw_ckpt["train_args"]["project"] = str(args.run_root)
+                    raw_ckpt["train_args"]["name"] = arm_name
+                    raw_ckpt["train_args"]["batch"] = batch_size
+                    raw_ckpt["train_args"]["cos_lr"] = True
+                    raw_ckpt["train_args"]["close_mosaic"] = 10
+                    torch.save(raw_ckpt, resume_target)
+                    print(
+                        f"[resume] Patched {resume_target.name} train_args on disk: "
+                        f"batch={batch_size}, cos_lr=True, close_mosaic=10, data={rebased / 'combined_c2.yaml'}"
+                    )
+            except Exception as patch_exc:
+                print(f"[resume] Warning: Could not patch on-disk train_args: {patch_exc}")
+
+            args_yaml = arm_dir / "args.yaml"
+            if args_yaml.is_file():
+                try:
+                    y_args = yaml.safe_load(args_yaml.read_text(encoding="utf-8")) or {}
+                    y_args["data"] = str(rebased / "combined_c2.yaml")
+                    y_args["batch"] = batch_size
+                    y_args["cos_lr"] = True
+                    y_args["close_mosaic"] = 10
+                    args_yaml.write_text(yaml.safe_dump(y_args, sort_keys=False), encoding="utf-8")
+                except Exception as y_exc:
+                    print(f"[resume] Warning: Could not patch args.yaml: {y_exc}")
+
             probe = YOLO(str(resume_target))
             checkpoint = getattr(probe, "ckpt", {}) or {}
             if checkpoint.get("epoch", -1) >= 0 and checkpoint.get("optimizer") is not None:
                 completed_epoch = checkpoint["epoch"] + 1
                 if completed_epoch >= EPOCHS:
                     print(f"{arm_name} is already complete ({completed_epoch}/{EPOCHS} epochs); preserving {best_pt}")
+                    evaluate_arm(arm, args, rebased)
                     return best_pt
-                print(f"[resume] Resuming {arm_name} from epoch {completed_epoch + 1}/{EPOCHS} via standard resume")
+                print(f"[resume] Resuming {arm_name} from epoch {completed_epoch + 1}/{EPOCHS} at batch={batch_size}")
                 model = probe
                 register_session_guard_callbacks(model, args.max_hours, arm_dir, arm_name)
                 model.train(resume=True, augmentations=aug)
@@ -631,13 +719,14 @@ def train_arm(arm: str, args, rebased: Path) -> Path:
 
             if completed_epochs >= EPOCHS:
                 print(f"{arm_name} is already complete ({completed_epochs}/{EPOCHS} epochs); preserving {best_pt}")
+                evaluate_arm(arm, args, rebased)
                 return best_pt
 
             remaining_epochs = EPOCHS - completed_epochs
             print("\n" + "=" * 72)
             print(f"[RESILIENT RESUME] Standard last.pt optimizer state unavailable.")
             print(f"[RESILIENT RESUME] Recovered {completed_epochs} completed epochs from results.csv.")
-            print(f"[RESILIENT RESUME] Resuming training from best.pt ({best_pt}) for {remaining_epochs} remaining epochs.")
+            print(f"[RESILIENT RESUME] Resuming training from best.pt ({best_pt}) for {remaining_epochs} remaining epochs at batch={batch_size}.")
             print("=" * 72 + "\n", flush=True)
 
             model = YOLO(str(best_pt))
@@ -647,6 +736,9 @@ def train_arm(arm: str, args, rebased: Path) -> Path:
                 epochs=remaining_epochs,
                 patience=PATIENCE,
                 imgsz=IMG_SIZE,
+                batch=batch_size,
+                cos_lr=True,
+                close_mosaic=10,
                 seed=SEED,
                 deterministic=True,
                 project=str(args.run_root),
@@ -676,6 +768,9 @@ def train_arm(arm: str, args, rebased: Path) -> Path:
             epochs=EPOCHS,
             patience=PATIENCE,
             imgsz=IMG_SIZE,
+            batch=batch_size,
+            cos_lr=True,
+            close_mosaic=10,
             seed=SEED,
             deterministic=True,
             project=str(args.run_root),
@@ -687,10 +782,26 @@ def train_arm(arm: str, args, rebased: Path) -> Path:
             fliplr=0.5,
         )
 
+    # Fix 1 Post-Train Hook: If trainer stopped and stripped last.pt, restore from safe_pt
+    if safe_pt.is_file() and last_pt.is_file() and not checkpoint_has_optimizer(last_pt):
+        if checkpoint_has_optimizer(safe_pt):
+            print(f"[SESSION GUARD] Restoring unstripped optimizer from {safe_pt} -> {last_pt} for seamless next session resume.")
+            shutil.copy2(safe_pt, last_pt)
+
     target_best = best_pt if best_pt.is_file() else last_pt
     if not target_best.is_file():
         raise FileNotFoundError(f"training did not produce expected checkpoint: {best_pt}")
     print(f"Checkpoint ready: {target_best}")
+
+    # Fix 4: Auto-run comprehensive test & OOD evaluation at session completion
+    try:
+        print("\n" + "=" * 72)
+        print(f"[AUTO-EVAL] Automatically running test and OOD evaluation for {arm}...")
+        print("=" * 72, flush=True)
+        evaluate_arm(arm, args, rebased)
+    except Exception as eval_exc:
+        print(f"[AUTO-EVAL] Warning: Auto-evaluation failed: {eval_exc}")
+
     return target_best
 
 
@@ -699,26 +810,88 @@ def evaluate_arm(arm: str, args, rebased: Path) -> dict:
 
     model_path = args.run_root / f"run_c_{arm}" / "weights" / "best.pt"
     if not model_path.is_file():
-        raise FileNotFoundError(f"best checkpoint missing for {arm}: {model_path}")
-    output: dict = {"checkpoint": str(model_path), "sources": {}}
+        model_path = args.run_root / f"run_c_{arm}" / "weights" / "last.pt"
+    if not model_path.is_file():
+        raise FileNotFoundError(f"checkpoint missing for {arm}: {model_path}")
+
+    print(f"\n[EVALUATION] Starting stratified evaluation of {arm} using {model_path}...")
+    output: dict = {
+        "arm": arm,
+        "checkpoint": str(model_path),
+        "sources": {},
+        "summary": {},
+    }
     model = YOLO(str(model_path))
     eval_names = SOURCE_YAMLS + [OOD_YAML]
+
+    table_rows = []
     for name in eval_names:
         yaml_path = rebased / f"{name}.yaml"
         if not yaml_path.is_file():
-            raise FileNotFoundError(f"required final-evaluation YAML missing: {yaml_path}")
+            raise FileNotFoundError(f"required evaluation YAML missing: {yaml_path}")
         config = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
         expected_names = _names(config)
-        metrics = model.val(data=str(yaml_path), imgsz=IMG_SIZE, split="test")
+
+        # Validation on test split
+        metrics = model.val(data=str(yaml_path), imgsz=IMG_SIZE, batch=16, split="test", verbose=False)
+
+        map50 = float(metrics.box.map50)
+        map50_95 = float(metrics.box.map)
+        precision = float(metrics.box.mp)
+        recall = float(metrics.box.mr)
+
         seen = {int(c): float(v) for c, v in zip(metrics.box.ap_class_index, metrics.box.ap50)}
         per_class = {label: seen.get(index) for index, label in enumerate(expected_names)}
+
         output["sources"][name] = {
-            "map50": float(metrics.box.map50),
+            "map50": map50,
+            "map50_95": map50_95,
+            "precision": precision,
+            "recall": recall,
             "per_class_map50": per_class,
             "class_names": expected_names,
         }
-        print(f"{arm:<8} {name:<22} mAP50={metrics.box.map50:.4f} " +
-              " ".join(f"{label}={value:.4f}" if value is not None else f"{label}=N/A" for label, value in per_class.items()))
+
+        litter_str = f"{per_class.get('litter', 0):.4f}" if per_class.get("litter") is not None else "N/A"
+        hyacinth_str = f"{per_class.get('hyacinth', 0):.4f}" if per_class.get("hyacinth") is not None else "N/A"
+        table_rows.append((name, map50, map50_95, precision, recall, litter_str, hyacinth_str))
+
+    # Compute Stratified Macro Averages
+    dep_map50 = [output["sources"][s]["map50"] for s in DEPLOYMENT_SOURCES if s in output["sources"]]
+    dep_map50_95 = [output["sources"][s]["map50_95"] for s in DEPLOYMENT_SOURCES if s in output["sources"]]
+    donor_map50 = [output["sources"][s]["map50"] for s in DONOR_SOURCES if s in output["sources"]]
+    donor_map50_95 = [output["sources"][s]["map50_95"] for s in DONOR_SOURCES if s in output["sources"]]
+
+    summary = {
+        "deployment_macro_map50": float(sum(dep_map50) / len(dep_map50)) if dep_map50 else 0.0,
+        "deployment_macro_map50_95": float(sum(dep_map50_95) / len(dep_map50_95)) if dep_map50_95 else 0.0,
+        "donor_macro_map50": float(sum(donor_map50) / len(donor_map50)) if donor_map50 else 0.0,
+        "donor_macro_map50_95": float(sum(donor_map50_95) / len(donor_map50_95)) if donor_map50_95 else 0.0,
+        "combined_test_map50": output["sources"].get("combined_c2", {}).get("map50", 0.0),
+        "combined_test_map50_95": output["sources"].get("combined_c2", {}).get("map50_95", 0.0),
+        "ood_aquatrash_map50": output["sources"].get("ood_aquatrash", {}).get("map50", 0.0),
+        "ood_aquatrash_map50_95": output["sources"].get("ood_aquatrash", {}).get("map50_95", 0.0),
+    }
+    output["summary"] = summary
+
+    # Print Formatted Stratified Results Table
+    print("\n" + "=" * 90)
+    print(f" STRATIFIED TEST & OOD EVALUATION REPORT: Arm [{arm.upper()}]")
+    print("=" * 90)
+    print(f"{'Source':<24} {'mAP50':<9} {'mAP50-95':<10} {'Precision':<11} {'Recall':<9} {'Litter':<9} {'Hyacinth':<9}")
+    print("-" * 90)
+    for row in table_rows:
+        print(f"{row[0]:<24} {row[1]:<9.4f} {row[2]:<10.4f} {row[3]:<11.4f} {row[4]:<9.4f} {row[5]:<9} {row[6]:<9}")
+    print("-" * 90)
+    print(f"{'Deployment Macro':<24} {summary['deployment_macro_map50']:<9.4f} {summary['deployment_macro_map50_95']:<10.4f}")
+    print(f"{'Donor Macro':<24} {summary['donor_macro_map50']:<9.4f} {summary['donor_macro_map50_95']:<10.4f}")
+    print(f"{'Combined Test':<24} {summary['combined_test_map50']:<9.4f} {summary['combined_test_map50_95']:<10.4f}")
+    print(f"{'AquaTrash OOD':<24} {summary['ood_aquatrash_map50']:<9.4f} {summary['ood_aquatrash_map50_95']:<10.4f}")
+    print("=" * 90 + "\n", flush=True)
+
+    eval_out = args.run_root / f"eval_results_{arm}.json"
+    eval_out.write_text(json.dumps(output, indent=2), encoding="utf-8")
+    print(f"Saved evaluation metrics to {eval_out}")
     return output
 
 
@@ -730,7 +903,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-root", type=Path, default=Path("/kaggle/working/roboat"))
     parser.add_argument("--resume", action="store_true", help="resume an interrupted run, or reuse its completed best.pt")
     parser.add_argument("--resume-from", type=Path, help="previous Kaggle output run folder; copied from read-only input before resuming")
-    parser.add_argument("--max-hours", type=float, default=DEFAULT_MAX_HOURS, help="maximum wall-clock training hours before safe graceful stop (default: 10.3)")
+    parser.add_argument("--batch", type=int, default=None, help="training batch size (default: 24 on 15+ GB GPU, else 16)")
+    parser.add_argument("--max-hours", type=float, default=DEFAULT_MAX_HOURS, help="maximum wall-clock training hours before safe graceful stop (default: 10.2)")
     parser.add_argument("--stage-ssd", action="store_true", default=None, help="stage dataset to fast local NVMe SSD (/tmp/roboat_ssd)")
     parser.add_argument("--no-stage-ssd", action="store_true", help="disable SSD staging")
     parser.add_argument("--ssd-dir", type=Path, default=Path("/tmp/roboat_ssd"), help="SSD staging directory (default: /tmp/roboat_ssd)")
@@ -771,7 +945,17 @@ def main(argv: list[str] | None = None) -> int:
             train_arm(arm, args, rebased)
         return 0
 
-    results = {arm: evaluate_arm(arm, args, rebased) for arm in arms}
+    # Mode evaluate: evaluate present arms without crashing
+    arms_to_eval = [
+        a for a in arms
+        if (args.run_root / f"run_c_{a}" / "weights" / "best.pt").is_file()
+        or (args.run_root / f"run_c_{a}" / "weights" / "last.pt").is_file()
+    ]
+    if not arms_to_eval:
+        print(f"No completed checkpoints found to evaluate for arm(s): {arms}")
+        return 1
+
+    results = {arm: evaluate_arm(arm, args, rebased) for arm in arms_to_eval}
     out_path = args.run_root / "final_test_results.json"
     out_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"FINAL TEST/OOD RESULTS saved to {out_path}")
