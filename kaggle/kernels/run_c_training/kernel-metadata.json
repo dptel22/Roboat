@@ -9,11 +9,10 @@
   "enable_tpu": false,
   "enable_internet": true,
   "dataset_sources": [
-    "dptel22/roboat-run-c"
+    "dptel22/roboat-run-c",
+    "dptel22/roboat-run-c-v2-output"
   ],
   "competition_sources": [],
-  "kernel_sources": [
-    "dptel22/roboat-run-c-training"
-  ],
+  "kernel_sources": [],
   "model_sources": []
 }

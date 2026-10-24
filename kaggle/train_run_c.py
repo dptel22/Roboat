@@ -67,58 +67,42 @@ def stage_dataset_to_ssd(
     if data_root.resolve() == target_dir.resolve():
         return data_root
 
-    marker = target_dir / ".staging_complete"
-    if marker.is_file():
+    # Verify if target already contains a valid, fully staged dataset with yamls
+    if (target_dir / "yamls").is_dir() and any((target_dir / "yamls").glob("*.yaml")):
         print(f"[ssd-stage] Dataset already staged at {target_dir}; reusing.")
         return target_dir
 
     print(
-        f"[ssd-stage] Staging dataset from {data_root} to fast SSD {target_dir} ({num_workers} threads)...",
+        f"[ssd-stage] Staging dataset from {data_root} to fast SSD {target_dir}...",
         flush=True,
     )
     t0 = time.time()
-    files_to_copy: list[tuple[Path, Path]] = []
-    total_bytes = 0
-
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
-        for root, _, files in os.walk(data_root):
-            rel = Path(root).relative_to(data_root)
-            dst_dir = target_dir / rel
-            dst_dir.mkdir(parents=True, exist_ok=True)
-            for f in files:
-                src_f = Path(root) / f
-                dst_f = dst_dir / f
-                if not dst_f.is_file() or dst_f.stat().st_size != src_f.stat().st_size:
-                    files_to_copy.append((src_f, dst_f))
-                    total_bytes += src_f.stat().st_size
+        # Attempt fast system copy first on Linux (cp -r -L follows all symlinks)
+        cp_ok = False
+        if os.name != "nt":
+            try:
+                ret = os.system(f"cp -r -L '{data_root}/.' '{target_dir}/'")
+                if ret == 0 and (target_dir / "yamls").is_dir() and any((target_dir / "yamls").glob("*.yaml")):
+                    cp_ok = True
+            except Exception:
+                cp_ok = False
+
+        if not cp_ok:
+            shutil.copytree(data_root, target_dir, symlinks=False, dirs_exist_ok=True)
+
+        elapsed = time.time() - t0
+        print(f"[ssd-stage] Staged dataset to {target_dir} in {elapsed:.1f}s.", flush=True)
     except Exception as exc:
-        print(f"[ssd-stage] Warning: Staging preparation failed: {exc}. Falling back to {data_root}.")
+        print(f"[ssd-stage] Warning: Staging failed ({exc}); falling back to {data_root}.", flush=True)
         return data_root
 
-    if not files_to_copy:
-        marker.write_text(f"complete: 0 files copied at {time.time()}\n", encoding="utf-8")
-        print(f"[ssd-stage] All files already present at {target_dir}.")
-        return target_dir
+    # Fail-safe verification: if yamls wasn't copied, fallback to data_root
+    if not (target_dir / "yamls").is_dir() or not any((target_dir / "yamls").glob("*.yaml")):
+        print(f"[ssd-stage] Warning: Staged yamls directory missing; falling back to {data_root}.", flush=True)
+        return data_root
 
-    def _copy_worker(pair: tuple[Path, Path]) -> None:
-        src, dst = pair
-        shutil.copy2(src, dst)
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as pool:
-        list(pool.map(_copy_worker, files_to_copy))
-
-    elapsed = time.time() - t0
-    rate_mb = (total_bytes / (1024 * 1024)) / max(0.1, elapsed)
-    marker.write_text(
-        f"complete: {len(files_to_copy)} files, {total_bytes} bytes at {time.time()}\n",
-        encoding="utf-8",
-    )
-    print(
-        f"[ssd-stage] Staged {len(files_to_copy):,} files ({total_bytes / (1024 * 1024):.1f} MB) "
-        f"in {elapsed:.1f}s ({rate_mb:.1f} MB/s).",
-        flush=True,
-    )
     return target_dir
 
 
