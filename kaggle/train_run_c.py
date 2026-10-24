@@ -58,6 +58,20 @@ def resolve_data_path(value: str | Path, data_root: Path) -> Path:
     return path if path.is_absolute() else data_root / path
 
 
+def find_data_root(hint: Path = Path("/kaggle/input/roboat-run-c")) -> Path:
+    """Auto-discover dataset root containing yamls and audit manifest."""
+    if (hint / "yamls").is_dir():
+        return hint
+    input_dir = Path("/kaggle/input")
+    if input_dir.is_dir():
+        for root, dirs, _ in os.walk(input_dir, followlinks=True):
+            if "yamls" in dirs and (Path(root) / "yamls" / "combined_c2.yaml").is_file():
+                found = Path(root)
+                print(f"[data-root] Auto-discovered dataset at {found}")
+                return found
+    return hint
+
+
 def stage_dataset_to_ssd(
     data_root: Path,
     target_dir: Path = Path("/tmp/roboat_ssd"),
@@ -72,6 +86,10 @@ def stage_dataset_to_ssd(
         print(f"[ssd-stage] Dataset already staged at {target_dir}; reusing.")
         return target_dir
 
+    if not data_root.is_dir() or not (data_root / "yamls").is_dir():
+        print(f"[ssd-stage] Warning: data_root {data_root} is invalid or missing yamls; skipping staging.")
+        return data_root
+
     print(
         f"[ssd-stage] Staging dataset from {data_root} to fast SSD {target_dir}...",
         flush=True,
@@ -83,7 +101,7 @@ def stage_dataset_to_ssd(
         cp_ok = False
         if os.name != "nt":
             try:
-                ret = os.system(f"cp -r -L '{data_root}/.' '{target_dir}/'")
+                ret = os.system(f"cp -r -L \"{data_root}\"/* \"{target_dir}/\" 2>/dev/null")
                 if ret == 0 and (target_dir / "yamls").is_dir() and any((target_dir / "yamls").glob("*.yaml")):
                     cp_ok = True
             except Exception:
@@ -720,6 +738,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     args.data_root = args.data_root.expanduser().resolve()
     args.run_root = args.run_root.expanduser().resolve()
+    args.data_root = find_data_root(args.data_root)
 
     # If resume_from is given, copy cached audit_report.json if available
     if args.resume_from:
