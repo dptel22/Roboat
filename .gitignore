@@ -3,6 +3,7 @@ data/raw/
 data/processed/
 data/exploration_samples/
 *.zip
+results/
 
 # Python
 __pycache__/

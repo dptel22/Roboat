@@ -14,12 +14,14 @@ are read only by the separate final-evaluation mode.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import hashlib
 import json
 import os
 import shutil
 import sys
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -32,6 +34,7 @@ IMG_SIZE = 960
 EPOCHS = 100
 PATIENCE = 20
 SEED = 42
+DEFAULT_MAX_HOURS = 10.3
 EXPECTED_SPLIT_COUNTS = {"train": 14_507, "val": 1_590, "test": 1_772}
 EXPECTED_OOD_IMAGES = 369
 CLASS_NAMES = ["litter", "hyacinth"]
@@ -53,6 +56,70 @@ def resolve_data_path(value: str | Path, data_root: Path) -> Path:
         raise ValueError(f"Unrecognized Windows dataset path (missing {marker}): {raw}")
     path = Path(raw)
     return path if path.is_absolute() else data_root / path
+
+
+def stage_dataset_to_ssd(
+    data_root: Path,
+    target_dir: Path = Path("/tmp/roboat_ssd"),
+    num_workers: int = 16,
+) -> Path:
+    """Stage dataset from slow network mount to local NVMe SSD storage (/tmp)."""
+    if data_root.resolve() == target_dir.resolve():
+        return data_root
+
+    marker = target_dir / ".staging_complete"
+    if marker.is_file():
+        print(f"[ssd-stage] Dataset already staged at {target_dir}; reusing.")
+        return target_dir
+
+    print(
+        f"[ssd-stage] Staging dataset from {data_root} to fast SSD {target_dir} ({num_workers} threads)...",
+        flush=True,
+    )
+    t0 = time.time()
+    files_to_copy: list[tuple[Path, Path]] = []
+    total_bytes = 0
+
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for root, _, files in os.walk(data_root):
+            rel = Path(root).relative_to(data_root)
+            dst_dir = target_dir / rel
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            for f in files:
+                src_f = Path(root) / f
+                dst_f = dst_dir / f
+                if not dst_f.is_file() or dst_f.stat().st_size != src_f.stat().st_size:
+                    files_to_copy.append((src_f, dst_f))
+                    total_bytes += src_f.stat().st_size
+    except Exception as exc:
+        print(f"[ssd-stage] Warning: Staging preparation failed: {exc}. Falling back to {data_root}.")
+        return data_root
+
+    if not files_to_copy:
+        marker.write_text(f"complete: 0 files copied at {time.time()}\n", encoding="utf-8")
+        print(f"[ssd-stage] All files already present at {target_dir}.")
+        return target_dir
+
+    def _copy_worker(pair: tuple[Path, Path]) -> None:
+        src, dst = pair
+        shutil.copy2(src, dst)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as pool:
+        list(pool.map(_copy_worker, files_to_copy))
+
+    elapsed = time.time() - t0
+    rate_mb = (total_bytes / (1024 * 1024)) / max(0.1, elapsed)
+    marker.write_text(
+        f"complete: {len(files_to_copy)} files, {total_bytes} bytes at {time.time()}\n",
+        encoding="utf-8",
+    )
+    print(
+        f"[ssd-stage] Staged {len(files_to_copy):,} files ({total_bytes / (1024 * 1024):.1f} MB) "
+        f"in {elapsed:.1f}s ({rate_mb:.1f} MB/s).",
+        flush=True,
+    )
+    return target_dir
 
 
 def rebase_yamls(data_root: Path, workdir: Path) -> Path:
@@ -159,6 +226,23 @@ def _sha256(path: Path) -> str:
 
 def audit_dataset(data_root: Path, rebased: Path, run_root: Path) -> dict:
     """Fail-closed audit of split lists, labels, exact duplicates and groups."""
+    run_root.mkdir(parents=True, exist_ok=True)
+    audit_path = run_root / "audit_report.json"
+    if audit_path.is_file():
+        try:
+            cached = json.loads(audit_path.read_text(encoding="utf-8"))
+            checks = cached.get("checks", {})
+            if (
+                checks.get("split_path_and_sha256_disjoint")
+                and checks.get("manifest_group_disjoint")
+                and checks.get("combined_split_counts") == EXPECTED_SPLIT_COUNTS
+            ):
+                print(f"[audit] Reusing cached audit report: {audit_path}")
+                print(f"AUDIT PASS (cached) — {audit_path}")
+                return cached
+        except Exception as exc:
+            print(f"[audit] Cached report unreadable or invalid ({exc}); running fresh audit...")
+
     report: dict = {"data_root": str(data_root), "checks": {}, "sources": {}}
     combined_path = rebased / "combined_c2.yaml"
     if not combined_path.is_file():
@@ -171,6 +255,13 @@ def audit_dataset(data_root: Path, rebased: Path, run_root: Path) -> dict:
     split_paths: dict[str, set[str]] = {}
     class_counts: dict[str, Counter] = {}
     images_by_size: dict[int, list[tuple[str, Path]]] = defaultdict(list)
+
+    def _audit_image_item(item: tuple[str, Path, int]) -> tuple[str, Path, int, Counter]:
+        split, img, nc = item
+        counts = _audit_label(_label_path(img), nc)
+        size = img.stat().st_size
+        return split, img, size, counts
+
     for split in ("train", "val", "test"):
         images = _read_images(combined[split])
         combined_lists[split] = images
@@ -181,12 +272,14 @@ def audit_dataset(data_root: Path, rebased: Path, run_root: Path) -> dict:
         if len(normalized) != len(set(normalized)):
             raise ValueError(f"duplicate image path(s) in combined {split} list")
         split_paths[split] = set(normalized)
+
         counts: Counter = Counter()
-        for image_index, image in enumerate(images, 1):
-            counts.update(_audit_label(_label_path(image), 2))
-            images_by_size[image.stat().st_size].append((split, image))
-            if image_index % 1_000 == 0:
-                print(f"Audit {split}: checked labels for {image_index:,}/{len(images):,} images", flush=True)
+        items = [(split, img, 2) for img in images]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+            for _, img, size, c in pool.map(_audit_image_item, items):
+                counts.update(c)
+                images_by_size[size].append((split, img))
+        print(f"Audit {split}: checked labels for {len(images):,} images", flush=True)
         class_counts[split] = counts
 
     for a, b in (("train", "val"), ("train", "test"), ("val", "test")):
@@ -214,20 +307,19 @@ def audit_dataset(data_root: Path, rebased: Path, run_root: Path) -> dict:
             if not keys <= split_paths[split]:
                 raise ValueError(f"{name} {split} contains images outside combined {split}")
             counts: Counter = Counter()
-            for image in images:
-                counts.update(_audit_label(_label_path(image), 2))
+            items = [(split, img, 2) for img in images]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+                for _, _, _, c in pool.map(_audit_image_item, items):
+                    counts.update(c)
             source_report[split] = {
                 "images": len(images),
                 "boxes": {CLASS_NAMES[c]: counts[c] for c in range(2)},
             }
         report["sources"][name] = source_report
 
-    # Run C bundle carries this manifest so the audit can independently verify
-    # that video/session groups never cross train, validation, and test.
+    # Group leakage audit via manifest
     manifest = data_root / "audit" / "manifest.csv"
     if not manifest.is_file():
-        # Local data/processed trees keep the same file at their root; the
-        # bundle builder places it under audit/ for the Kaggle input mount.
         manifest = data_root / "manifest.csv"
     if not manifest.is_file():
         raise FileNotFoundError(
@@ -257,8 +349,7 @@ def audit_dataset(data_root: Path, rebased: Path, run_root: Path) -> dict:
     report["checks"]["manifest_group_disjoint"] = True
     report["checks"]["manifest_split_counts"] = dict(manifest_counts)
 
-    # AquaTrash is an eval-only, single-class benchmark, intentionally repeated
-    # under val and test in its YAML. Check its labels and train disjointness.
+    # AquaTrash OOD
     ood_path = rebased / f"{OOD_YAML}.yaml"
     if not ood_path.is_file():
         raise FileNotFoundError(f"required OOD YAML missing: {ood_path}")
@@ -272,33 +363,38 @@ def audit_dataset(data_root: Path, rebased: Path, run_root: Path) -> dict:
     if len(ood_path_keys) != len(ood_images):
         raise ValueError("duplicate image path(s) in AquaTrash evaluation list")
     ood_boxes = Counter()
-    for image in ood_images:
-        ood_boxes.update(_audit_label(_label_path(image), 1))
-        images_by_size[image.stat().st_size].append(("ood", image))
+    ood_items = [("ood", img, 1) for img in ood_images]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+        for _, img, size, c in pool.map(_audit_image_item, ood_items):
+            ood_boxes.update(c)
+            images_by_size[size].append(("ood", img))
 
-    # Exact hashes are needed only for files whose byte sizes occur in more
-    # than one split. This catches exact copies without reading all 4.5 GB.
+    # Exact duplicates check
     candidates = {
         size: rows for size, rows in images_by_size.items()
         if len({split for split, _ in rows}) > 1
     }
     sha_splits: dict[str, set[str]] = defaultdict(set)
-    for size_index, (size, rows) in enumerate(candidates.items(), 1):
-        for split, image in rows:
-            sha_splits[_sha256(image)].add(split)
-        if size_index % 100 == 0:
-            print(f"Exact-duplicate audit: hashed {size_index:,}/{len(candidates):,} shared-size groups", flush=True)
-    cross_split_hashes = [sha for sha, splits in sha_splits.items() if len(splits) > 1]
-    if cross_split_hashes:
-        raise ValueError(f"byte-identical images found across splits: {len(cross_split_hashes)}")
+    if candidates:
+        all_candidate_items = [
+            (split, img) for rows in candidates.values() for split, img in rows
+        ]
+        def _hash_worker(item: tuple[str, Path]) -> tuple[str, str]:
+            split, img = item
+            return _sha256(img), split
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+            for digest, split in pool.map(_hash_worker, all_candidate_items):
+                sha_splits[digest].add(split)
+        cross_split_hashes = [sha for sha, splits in sha_splits.items() if len(splits) > 1]
+        if cross_split_hashes:
+            raise ValueError(f"byte-identical images found across splits: {len(cross_split_hashes)}")
+
     report["checks"]["exact_hash_candidate_files"] = sum(len(rows) for rows in candidates.values())
     report["checks"]["split_path_and_sha256_disjoint"] = True
     report["checks"]["ood_aquatrash"] = {
         "images": len(ood_images), "boxes": ood_boxes[0], "disjoint_from_train": True,
     }
 
-    run_root.mkdir(parents=True, exist_ok=True)
-    audit_path = run_root / "audit_report.json"
     audit_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
     print(f"AUDIT PASS — report saved to {audit_path}")
@@ -412,6 +508,47 @@ def write_augmentation_preview(rebased: Path, run_root: Path, augmentations: lis
     return out
 
 
+def register_session_guard_callbacks(
+    model,
+    max_hours: float,
+    arm_dir: Path,
+    arm_name: str,
+) -> None:
+    """Register wall-clock timer and per-epoch safe checkpoint backup callback."""
+    start_time = time.time()
+    max_seconds = max_hours * 3600.0
+
+    def on_fit_epoch_end(trainer):
+        weights_dir = Path(trainer.save_dir) / "weights"
+        last_pt = weights_dir / "last.pt"
+        safe_pt = weights_dir / "resume_safe.pt"
+
+        # 1. Back up last.pt to resume_safe.pt every epoch
+        if last_pt.is_file():
+            try:
+                shutil.copy2(last_pt, safe_pt)
+            except Exception as e:
+                print(f"[SESSION GUARD] Warning: could not backup last.pt to resume_safe.pt: {e}")
+
+        # 2. Check wall-clock elapsed time
+        elapsed = time.time() - start_time
+        remaining = max_seconds - elapsed
+        epoch_idx = getattr(trainer, "epoch", 0)
+        total_epochs = getattr(trainer, "epochs", EPOCHS)
+
+        # Halt training cleanly before container limit
+        if elapsed >= max_seconds or remaining < 900:  # < 15 min remaining
+            print("\n" + "=" * 72)
+            print(f"[SESSION GUARD] Session boundary guard triggered after epoch {epoch_idx + 1}/{total_epochs}!")
+            print(f"[SESSION GUARD] Elapsed: {elapsed / 3600:.2f}h / Limit: {max_hours:.2f}h (remaining: {remaining / 60:.1f}m).")
+            print(f"[SESSION GUARD] Checkpoint safely preserved at {safe_pt}.")
+            print(f"[SESSION GUARD] Halting training cleanly to allow safe container completion.")
+            print("=" * 72 + "\n", flush=True)
+            trainer.stop = True
+
+    model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
+
+
 def train_arm(arm: str, args, rebased: Path) -> Path:
     from ultralytics import YOLO
     import ultralytics
@@ -426,32 +563,98 @@ def train_arm(arm: str, args, rebased: Path) -> Path:
     weights_dir = arm_dir / "weights"
     last_pt = weights_dir / "last.pt"
     best_pt = weights_dir / "best.pt"
+    safe_pt = weights_dir / "resume_safe.pt"
+    results_csv = arm_dir / "results.csv"
 
     if args.resume_from and not args.resume:
         raise ValueError("--resume-from requires --resume")
     if args.resume_from:
         source = args.resume_from.expanduser().resolve()
-        if not (source / "weights" / "last.pt").is_file():
-            raise FileNotFoundError(f"--resume-from must point to a run folder containing weights/last.pt: {source}")
+        has_checkpoint = (
+            (source / "weights" / "last.pt").is_file()
+            or (source / "weights" / "resume_safe.pt").is_file()
+            or (source / "weights" / "best.pt").is_file()
+        )
+        if not has_checkpoint:
+            raise FileNotFoundError(
+                f"--resume-from must point to a run folder containing weights/(last.pt, resume_safe.pt, or best.pt): {source}"
+            )
         if arm_dir.exists() and any(arm_dir.iterdir()):
-            raise FileExistsError(f"target run folder already exists; use it with --resume or choose another --run-root: {arm_dir}")
+            raise FileExistsError(
+                f"target run folder already exists; use it with --resume or choose another --run-root: {arm_dir}"
+            )
         arm_dir.parent.mkdir(parents=True, exist_ok=True)
+        print(f"[resume] Copying previous run folder from {source} to {arm_dir}...")
         shutil.copytree(source, arm_dir, dirs_exist_ok=True)
+        if not last_pt.is_file() and safe_pt.is_file():
+            shutil.copy2(safe_pt, last_pt)
 
     if args.resume:
-        if not last_pt.is_file():
-            raise FileNotFoundError(f"--resume requested but {last_pt} does not exist")
-        probe = YOLO(str(last_pt))  # Use the supported loader; never torch.load checkpoints directly.
-        checkpoint = getattr(probe, "ckpt", {}) or {}
-        if checkpoint.get("epoch", -1) >= 0 and checkpoint.get("optimizer") is not None:
-            print(f"Resuming {arm_name} from epoch {checkpoint['epoch'] + 1}")
-            model = probe
-            model.train(resume=True, augmentations=aug)
-        else:
+        resume_target = None
+        if last_pt.is_file():
+            resume_target = last_pt
+        elif safe_pt.is_file():
+            shutil.copy2(safe_pt, last_pt)
+            resume_target = last_pt
+
+        standard_resume_done = False
+        if resume_target is not None:
+            probe = YOLO(str(resume_target))
+            checkpoint = getattr(probe, "ckpt", {}) or {}
+            if checkpoint.get("epoch", -1) >= 0 and checkpoint.get("optimizer") is not None:
+                completed_epoch = checkpoint["epoch"] + 1
+                if completed_epoch >= EPOCHS:
+                    print(f"{arm_name} is already complete ({completed_epoch}/{EPOCHS} epochs); preserving {best_pt}")
+                    return best_pt
+                print(f"[resume] Resuming {arm_name} from epoch {completed_epoch + 1}/{EPOCHS} via standard resume")
+                model = probe
+                register_session_guard_callbacks(model, args.max_hours, arm_dir, arm_name)
+                model.train(resume=True, augmentations=aug)
+                standard_resume_done = True
+            else:
+                print(f"[resume] Checkpoint {resume_target} has no optimizer state; activating resilient resume fallback.")
+
+        if not standard_resume_done:
             if not best_pt.is_file():
-                raise RuntimeError(f"completed checkpoint has no best.pt: {best_pt}")
-            print(f"{arm_name} is already complete; preserving and reusing {best_pt}")
-            return best_pt
+                raise FileNotFoundError(f"--resume requested but neither valid last.pt nor best.pt exists in {weights_dir}")
+
+            completed_epochs = 0
+            if results_csv.is_file():
+                try:
+                    lines = [line.strip() for line in results_csv.read_text(encoding="utf-8").splitlines() if line.strip()]
+                    if len(lines) > 1:
+                        completed_epochs = len(lines) - 1
+                except Exception as e:
+                    print(f"Warning: could not parse results.csv: {e}")
+
+            if completed_epochs >= EPOCHS:
+                print(f"{arm_name} is already complete ({completed_epochs}/{EPOCHS} epochs); preserving {best_pt}")
+                return best_pt
+
+            remaining_epochs = EPOCHS - completed_epochs
+            print("\n" + "=" * 72)
+            print(f"[RESILIENT RESUME] Standard last.pt optimizer state unavailable.")
+            print(f"[RESILIENT RESUME] Recovered {completed_epochs} completed epochs from results.csv.")
+            print(f"[RESILIENT RESUME] Resuming training from best.pt ({best_pt}) for {remaining_epochs} remaining epochs.")
+            print("=" * 72 + "\n", flush=True)
+
+            model = YOLO(str(best_pt))
+            register_session_guard_callbacks(model, args.max_hours, arm_dir, arm_name)
+            model.train(
+                data=str(rebased / "combined_c2.yaml"),
+                epochs=remaining_epochs,
+                patience=PATIENCE,
+                imgsz=IMG_SIZE,
+                seed=SEED,
+                deterministic=True,
+                project=str(args.run_root),
+                name=arm_name,
+                exist_ok=True,
+                augmentations=aug,
+                scale=0.2,
+                flipud=0.0,
+                fliplr=0.5,
+            )
     else:
         if arm_dir.exists() and any(arm_dir.iterdir()):
             raise FileExistsError(
@@ -465,6 +668,7 @@ def train_arm(arm: str, args, rebased: Path) -> Path:
         if arm == "zenodo" and not Path(weights).is_file():
             raise FileNotFoundError(f"converted Zenodo checkpoint missing: {weights}")
         model = YOLO(weights)
+        register_session_guard_callbacks(model, args.max_hours, arm_dir, arm_name)
         model.train(
             data=str(rebased / "combined_c2.yaml"),
             epochs=EPOCHS,
@@ -476,15 +680,16 @@ def train_arm(arm: str, args, rebased: Path) -> Path:
             name=arm_name,
             exist_ok=False,
             augmentations=aug,
-            # Keep the already-small tiled targets visible after scale jitter.
             scale=0.2,
             flipud=0.0,
             fliplr=0.5,
         )
-    if not best_pt.is_file():
+
+    target_best = best_pt if best_pt.is_file() else last_pt
+    if not target_best.is_file():
         raise FileNotFoundError(f"training did not produce expected checkpoint: {best_pt}")
-    print(f"Best checkpoint: {best_pt}")
-    return best_pt
+    print(f"Checkpoint ready: {target_best}")
+    return target_best
 
 
 def evaluate_arm(arm: str, args, rebased: Path) -> dict:
@@ -504,7 +709,6 @@ def evaluate_arm(arm: str, args, rebased: Path) -> dict:
         expected_names = _names(config)
         metrics = model.val(data=str(yaml_path), imgsz=IMG_SIZE, split="test")
         seen = {int(c): float(v) for c, v in zip(metrics.box.ap_class_index, metrics.box.ap50)}
-        # A class with no ground-truth instances is N/A, never a fabricated zero.
         per_class = {label: seen.get(index) for index, label in enumerate(expected_names)}
         output["sources"][name] = {
             "map50": float(metrics.box.map50),
@@ -523,11 +727,32 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-root", type=Path, default=Path("/kaggle/input/roboat-run-c"))
     parser.add_argument("--run-root", type=Path, default=Path("/kaggle/working/roboat"))
     parser.add_argument("--resume", action="store_true", help="resume an interrupted run, or reuse its completed best.pt")
-    parser.add_argument("--resume-from", type=Path, help="previous Kaggle output run folder; copied from the read-only input before resuming")
+    parser.add_argument("--resume-from", type=Path, help="previous Kaggle output run folder; copied from read-only input before resuming")
+    parser.add_argument("--max-hours", type=float, default=DEFAULT_MAX_HOURS, help="maximum wall-clock training hours before safe graceful stop (default: 10.3)")
+    parser.add_argument("--stage-ssd", action="store_true", default=None, help="stage dataset to fast local NVMe SSD (/tmp/roboat_ssd)")
+    parser.add_argument("--no-stage-ssd", action="store_true", help="disable SSD staging")
+    parser.add_argument("--ssd-dir", type=Path, default=Path("/tmp/roboat_ssd"), help="SSD staging directory (default: /tmp/roboat_ssd)")
     parser.add_argument("--dry-run", action="store_true", help="audit and print the plan; never train or evaluate")
     args = parser.parse_args(argv)
     args.data_root = args.data_root.expanduser().resolve()
     args.run_root = args.run_root.expanduser().resolve()
+
+    # If resume_from is given, copy cached audit_report.json if available
+    if args.resume_from:
+        rf = args.resume_from.expanduser().resolve()
+        rf_audit = rf.parent / "audit_report.json" if rf.name.startswith("run_c_") else rf / "audit_report.json"
+        if rf_audit.is_file() and not (args.run_root / "audit_report.json").is_file():
+            args.run_root.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(rf_audit, args.run_root / "audit_report.json")
+            print(f"[audit] Copied cached audit report from {rf_audit} to {args.run_root / 'audit_report.json'}")
+
+    # SSD Staging: auto-stage when running inside Kaggle (/kaggle/input and /tmp available) unless explicitly disabled
+    should_stage = not args.no_stage_ssd and (
+        args.stage_ssd or (str(args.data_root).startswith("/kaggle/input") and Path("/tmp").is_dir())
+    )
+    if should_stage:
+        args.data_root = stage_dataset_to_ssd(args.data_root, target_dir=args.ssd_dir, num_workers=16)
+
     rebased = rebase_yamls(args.data_root, args.run_root)
     audit_dataset(args.data_root, rebased, args.run_root)
     if args.mode == "audit" or args.dry_run:

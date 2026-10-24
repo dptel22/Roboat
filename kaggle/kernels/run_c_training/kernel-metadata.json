@@ -12,6 +12,8 @@
     "dptel22/roboat-run-c"
   ],
   "competition_sources": [],
-  "kernel_sources": [],
+  "kernel_sources": [
+    "dptel22/roboat-run-c-training"
+  ],
   "model_sources": []
 }
