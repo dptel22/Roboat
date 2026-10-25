@@ -1,0 +1,18 @@
+{
+  "id": "dptel22/roboat-run-c-zenodo-training",
+  "title": "Roboat Run C Zenodo Training",
+  "code_file": "run_c_zenodo_v7.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "dataset_sources": [
+    "dptel22/roboat-run-c",
+    "dptel22/roboat-run-c-v4-output"
+  ],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}

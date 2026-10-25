@@ -10,7 +10,7 @@
   "enable_internet": true,
   "dataset_sources": [
     "dptel22/roboat-run-c",
-    "dptel22/roboat-run-c-v2-output"
+    "dptel22/roboat-run-c-v4-output"
   ],
   "competition_sources": [],
   "kernel_sources": [],
